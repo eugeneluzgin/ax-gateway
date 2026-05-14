@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -42,6 +43,16 @@ from ..commands.bootstrap import (
     _polish_metadata,
 )
 from ..config import resolve_space_id, resolve_user_base_url, resolve_user_token
+from ..connectors.registry import (
+    add_connector,
+    connectors_registry_path,
+    find_connector,
+    list_connectors,
+    load_connectors_registry,
+    remove_connector,
+    save_connectors_registry,
+    update_connector,
+)
 from ..gateway import (
     AX_PLUGIN_NAME,
     GatewayDaemon,
@@ -123,6 +134,12 @@ app.add_typer(spaces_app, name="spaces")
 app.add_typer(approvals_app, name="approvals")
 app.add_typer(runtime_app, name="runtime")
 app.add_typer(local_app, name="local")
+connectors_app = typer.Typer(
+    name="connectors",
+    help="Manage the Gateway connector registry (outbound tool providers)",
+    no_args_is_help=True,
+)
+app.add_typer(connectors_app, name="connectors")
 
 _STATE_STYLES = {
     "running": "green",
@@ -191,6 +208,217 @@ def _load_gateway_session_or_exit() -> dict:
         err_console.print("[red]Gateway is not logged in.[/red] Run `ax gateway login` first.")
         raise typer.Exit(1)
     return session
+
+
+def _connectors_parse_json_object(raw: str | None, *, label: str) -> dict[str, Any]:
+    if raw is None or not str(raw).strip():
+        return {}
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"{label} must be valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise typer.BadParameter(f"{label} must be a JSON object")
+    return parsed
+
+
+@connectors_app.command("list")
+def connectors_list(as_json: bool = JSON_OPTION):
+    """List registered outbound connectors."""
+    reg = load_connectors_registry()
+    rows = list_connectors(reg)
+    path = connectors_registry_path()
+    if as_json:
+        print_json({"registry_path": str(path), "connectors": rows})
+        return
+    err_console.print("[bold]ax gateway connectors list[/bold]")
+    err_console.print(f"  registry_path = {path}")
+    if not rows:
+        err_console.print("  (no connectors)")
+        return
+    print_table(
+        ["name", "provider", "enabled", "id", "auth_ref"],
+        [
+            {
+                "name": r.get("name"),
+                "provider": r.get("provider"),
+                "enabled": r.get("enabled"),
+                "id": r.get("id"),
+                "auth_ref": r.get("auth_ref") or "-",
+            }
+            for r in rows
+        ],
+        keys=["name", "provider", "enabled", "id", "auth_ref"],
+    )
+
+
+@connectors_app.command("show")
+def connectors_show(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    as_json: bool = JSON_OPTION,
+):
+    """Show one connector row."""
+    reg = load_connectors_registry()
+    row = find_connector(reg, ref)
+    if not row:
+        err_console.print(f"[red]Unknown connector:[/red] {ref}")
+        raise typer.Exit(1)
+    snapshot = dict(row)
+    if as_json:
+        print_json({"registry_path": str(connectors_registry_path()), "connector": snapshot})
+        return
+    err_console.print(f"[bold]ax gateway connectors show {ref}[/bold]")
+    for key in ("name", "provider", "enabled", "id", "auth_ref", "created_at", "updated_at"):
+        err_console.print(f"  {key} = {snapshot.get(key)}")
+    err_console.print(f"  config = {json.dumps(snapshot.get('config') or {}, sort_keys=True)}")
+    err_console.print(f"  metadata = {json.dumps(snapshot.get('metadata') or {}, sort_keys=True)}")
+
+
+@connectors_app.command("add")
+def connectors_add(
+    name: str = typer.Argument(..., help="Unique connector name"),
+    provider: str = typer.Option(..., "--provider", "-p", help="Provider id (e.g. composio, http_mcp)"),
+    auth_ref: str | None = typer.Option(
+        None,
+        "--auth-ref",
+        help="Non-secret reference only (env file path, vault key). Never paste API keys here.",
+    ),
+    config_json: str | None = typer.Option(None, "--config-json", help="JSON object for provider config (no secrets)"),
+    metadata_json: str | None = typer.Option(None, "--metadata-json", help="JSON object for notes/tags"),
+    disabled: bool = typer.Option(False, "--disabled", help="Create in disabled state"),
+    as_json: bool = JSON_OPTION,
+):
+    """Register a new connector row."""
+    reg = load_connectors_registry()
+    try:
+        cfg = _connectors_parse_json_object(config_json, label="--config-json")
+        meta = _connectors_parse_json_object(metadata_json, label="--metadata-json")
+        rec = add_connector(
+            reg,
+            name=name,
+            provider=provider,
+            enabled=not disabled,
+            auth_ref=auth_ref,
+            config=cfg,
+            metadata=meta,
+        )
+        save_connectors_registry(reg)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except typer.BadParameter:
+        raise
+    if as_json:
+        print_json({"registry_path": str(connectors_registry_path()), "connector": dict(rec)})
+        return
+    err_console.print(f"[green]Added connector[/green] {rec.get('name')!r} ({rec.get('id')})")
+
+
+@connectors_app.command("remove")
+def connectors_remove(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    as_json: bool = JSON_OPTION,
+):
+    """Remove a connector from the registry."""
+    reg = load_connectors_registry()
+    if not remove_connector(reg, ref):
+        err_console.print(f"[red]Unknown connector:[/red] {ref}")
+        raise typer.Exit(1)
+    try:
+        save_connectors_registry(reg)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if as_json:
+        print_json({"registry_path": str(connectors_registry_path()), "removed": ref})
+        return
+    err_console.print(f"[green]Removed connector[/green] {ref!r}")
+
+
+@connectors_app.command("set")
+def connectors_set(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    enabled: bool | None = typer.Option(None, "--enable/--disable", help="Set enabled flag"),
+    rename: str | None = typer.Option(None, "--rename", help="New unique name"),
+    provider: str | None = typer.Option(None, "--provider", "-p", help="New provider id"),
+    auth_ref: str | None = typer.Option(None, "--auth-ref", help="Set auth ref (opaque path or key)"),
+    clear_auth_ref: bool = typer.Option(False, "--clear-auth-ref", help="Remove auth_ref"),
+    config_json: str | None = typer.Option(None, "--config-json", help="Replace config object"),
+    metadata_json: str | None = typer.Option(None, "--metadata-json", help="Replace metadata object"),
+    as_json: bool = JSON_OPTION,
+):
+    """Update fields on an existing connector."""
+    if clear_auth_ref and auth_ref is not None:
+        err_console.print("[red]Use either --clear-auth-ref or --auth-ref, not both.[/red]")
+        raise typer.Exit(1)
+    if (
+        enabled is None
+        and rename is None
+        and provider is None
+        and auth_ref is None
+        and not clear_auth_ref
+        and config_json is None
+        and metadata_json is None
+    ):
+        err_console.print(
+            "[red]No changes specified.[/red] Pass at least one of: "
+            "--enable/--disable, --rename, --provider, --auth-ref, --clear-auth-ref, "
+            "--config-json, --metadata-json"
+        )
+        raise typer.Exit(1)
+    reg = load_connectors_registry()
+    cfg: dict[str, Any] | None = None
+    meta: dict[str, Any] | None = None
+    if config_json is not None:
+        cfg = _connectors_parse_json_object(config_json, label="--config-json")
+    if metadata_json is not None:
+        meta = _connectors_parse_json_object(metadata_json, label="--metadata-json")
+    try:
+        if clear_auth_ref:
+            updated = update_connector(
+                reg,
+                ref,
+                name=rename,
+                provider=provider,
+                enabled=enabled,
+                clear_auth_ref=True,
+                config=cfg,
+                metadata=meta,
+            )
+        elif auth_ref is not None:
+            updated = update_connector(
+                reg,
+                ref,
+                name=rename,
+                provider=provider,
+                enabled=enabled,
+                auth_ref=auth_ref,
+                config=cfg,
+                metadata=meta,
+            )
+        else:
+            updated = update_connector(
+                reg,
+                ref,
+                name=rename,
+                provider=provider,
+                enabled=enabled,
+                config=cfg,
+                metadata=meta,
+            )
+        if not updated:
+            err_console.print(f"[red]Unknown connector:[/red] {ref}")
+            raise typer.Exit(1)
+        save_connectors_registry(reg)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    except typer.BadParameter:
+        raise
+    if as_json:
+        print_json({"registry_path": str(connectors_registry_path()), "connector": dict(updated)})
+        return
+    err_console.print(f"[green]Updated connector[/green] {updated.get('name')!r}")
 
 
 # ---------------------------------------------------------------------------

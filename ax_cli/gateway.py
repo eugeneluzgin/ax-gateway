@@ -3402,12 +3402,15 @@ def daemon_status() -> dict[str, Any]:
             pid = scanned[0]
             running = True
     registry = load_gateway_registry()
+    from ax_cli.connectors.registry import connectors_registry_path
+
     return {
         "pid": pid,
         "running": running,
         "gateway_dir": str(gateway_dir()),
         "gateway_environment": gateway_environment(),
         "registry_path": str(registry_path()),
+        "connectors_registry_path": str(connectors_registry_path()),
         "session_path": str(session_path()),
         "registry": registry,
     }
