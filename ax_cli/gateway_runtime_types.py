@@ -389,6 +389,42 @@ def agent_template_catalog() -> dict[str, dict[str, Any]]:
                 "supports_command_override": True,
             },
         },
+        "langgraph_composio": {
+            "id": "langgraph_composio",
+            "label": "LangGraph + Composio",
+            "description": "LangGraph bridge that searches and runs tools via Gateway connectors (Composio).",
+            "availability": "ready",
+            "launchable": True,
+            "runtime_type": "exec",
+            "asset_class": "interactive_agent",
+            "intake_model": "launch_on_send",
+            "trigger_sources": ["direct_message"],
+            "return_paths": ["inline_reply"],
+            "telemetry_shape": "basic",
+            "suggested_name": "langgraph-composio-bot",
+            "operator_summary": (
+                "LangGraph round-trip with Composio intent search and optional RUN: tool execution "
+                "through the Gateway connector registry (no secrets in agent config)."
+            ),
+            "recommended_test_message": "List GitHub tools for listing repository stargazers.",
+            "what_you_need": [
+                "Python 3.11+ and a registered Composio connector (`ax gateway connectors add` + auth write).",
+                "Pass `--connector-ref <name>` when adding this agent.",
+                "Optional: `pip install langgraph` for a one-node StateGraph wrapper (same logic without it).",
+            ],
+            "setup_skill": "gateway-agent-setup",
+            "setup_skill_path": str(skill_path),
+            "defaults": {
+                "runtime_type": "exec",
+                "exec_command": "python3 examples/gateway_langgraph_composio/langgraph_composio_bridge.py",
+                "workdir": str(repo_root),
+            },
+            "signals": runtime_signals["exec"],
+            "advanced": {
+                "adapter_label": "Gateway-managed LangGraph + Composio bridge",
+                "supports_command_override": True,
+            },
+        },
         "strands": {
             "id": "strands",
             "label": "Strands",
@@ -638,6 +674,7 @@ def agent_template_list(*, include_advanced: bool = False) -> list[dict[str, Any
         "hermes",
         "ollama",
         "langgraph",
+        "langgraph_composio",
         "strands",
         "echo_test",
         "service_account",

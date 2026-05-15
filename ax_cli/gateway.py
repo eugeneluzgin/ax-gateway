@@ -3931,6 +3931,13 @@ def sanitize_exec_env(prompt: str, entry: dict[str, Any]) -> dict[str, str]:
     hermes_repo_path = str(entry.get("hermes_repo_path") or "").strip()
     if hermes_repo_path:
         env["HERMES_REPO_PATH"] = hermes_repo_path
+    connector_ref = str(entry.get("connector_ref") or "").strip()
+    if not connector_ref:
+        meta = entry.get("metadata")
+        if isinstance(meta, dict):
+            connector_ref = str(meta.get("connector_ref") or "").strip()
+    if connector_ref:
+        env["AX_GATEWAY_CONNECTOR_REF"] = connector_ref
     return env
 
 

@@ -1811,6 +1811,7 @@ def _register_managed_agent(
     timeout_seconds: int | None = None,
     allow_all_users: bool = False,
     allowed_users: str | None = None,
+    connector_ref: str | None = None,
     start: bool = True,
 ) -> dict:
     name = name.strip()
@@ -1842,6 +1843,10 @@ def _register_managed_agent(
     if template_effective_id in {"hermes", "sentinel_cli", "claude_code_channel"} and not explicit_workdir:
         raise ValueError(
             f"Template {template['label']} requires --workdir so Gateway can bind the agent to its runtime folder."
+        )
+    if template_effective_id == "langgraph_composio" and not str(connector_ref or "").strip():
+        raise ValueError(
+            f"Template {template['label']} requires --connector-ref (registered `ax gateway connectors` name or id)."
         )
     _validate_runtime_registration(runtime_type, exec_cmd)
     timeout_effective = _normalize_timeout_seconds(timeout_seconds)
@@ -1934,6 +1939,9 @@ def _register_managed_agent(
         entry_payload["allow_all_users"] = True
     if allowed_users and str(allowed_users).strip():
         entry_payload["allowed_users"] = str(allowed_users).strip()
+    normalized_connector_ref = str(connector_ref or "").strip() or None
+    if normalized_connector_ref:
+        entry_payload["connector_ref"] = normalized_connector_ref
     if requires_approval:
         entry_payload["install_id"] = str(uuid.uuid4())
     entry = upsert_agent_entry(registry, entry_payload)
@@ -2216,6 +2224,7 @@ def _update_managed_agent(
     timeout_seconds: int | object = _UNSET,
     allow_all_users: bool | object = _UNSET,
     allowed_users: str | object = _UNSET,
+    connector_ref: str | object = _UNSET,
     desired_state: str | None = None,
 ) -> dict:
     name = name.strip()
@@ -2320,6 +2329,12 @@ def _update_managed_agent(
             entry["allowed_users"] = allowed_clean
         else:
             entry.pop("allowed_users", None)
+    if connector_ref is not _UNSET:
+        connector_clean = str(connector_ref or "").strip()
+        if connector_clean:
+            entry["connector_ref"] = connector_clean
+        else:
+            entry.pop("connector_ref", None)
     if template_effective_id == "ollama":
         entry["ollama_model"] = ollama_model_effective
     else:
@@ -8823,6 +8838,11 @@ def add_agent(
         "--allowed-users",
         help="Hermes plugin runtime only: comma-separated agent/user names allowed to mention this agent.",
     ),
+    connector_ref: str = typer.Option(
+        None,
+        "--connector-ref",
+        help="Connector registry name/id for langgraph_composio (sets AX_GATEWAY_CONNECTOR_REF on exec).",
+    ),
     start: bool = typer.Option(True, "--start/--no-start", help="Desired running state after registration"),
     as_json: bool = JSON_OPTION,
 ):
@@ -8867,6 +8887,7 @@ def add_agent(
             timeout_seconds=timeout_seconds,
             allow_all_users=allow_all_users,
             allowed_users=allowed_users,
+            connector_ref=connector_ref,
             start=start,
         )
     except (ValueError, LookupError) as exc:
@@ -8884,6 +8905,8 @@ def add_agent(
         err_console.print(f"  desired_state = {entry['desired_state']}")
         if entry.get("timeout_seconds"):
             err_console.print(f"  timeout = {entry.get('timeout_seconds')}s")
+        if entry.get("connector_ref"):
+            err_console.print(f"  connector_ref = {entry['connector_ref']}")
         err_console.print(f"  token_file = {entry['token_file']}")
 
 
@@ -8931,6 +8954,11 @@ def update_agent(
             "Pass an empty string to clear."
         ),
     ),
+    connector_ref: str = typer.Option(
+        None,
+        "--connector-ref",
+        help="Connector registry name/id for langgraph_composio (empty string clears).",
+    ),
     desired_state: str = typer.Option(None, "--desired-state", help="running | stopped"),
     as_json: bool = JSON_OPTION,
 ):
@@ -8960,6 +8988,7 @@ def update_agent(
             timeout_seconds=timeout_seconds if timeout_seconds is not None else _UNSET,
             allow_all_users=allow_all_users if allow_all_users is not None else _UNSET,
             allowed_users=allowed_users if allowed_users is not None else _UNSET,
+            connector_ref=connector_ref if connector_ref is not None else _UNSET,
             desired_state=desired_state,
         )
     except (LookupError, ValueError) as exc:
