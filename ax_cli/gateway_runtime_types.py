@@ -18,6 +18,10 @@ def _gateway_setup_skill_path() -> Path:
     return _repo_root() / "skills" / "gateway-agent-setup" / "SKILL.md"
 
 
+def _gateway_composio_skill_path() -> Path:
+    return _repo_root() / "skills" / "gateway-composio-connectors" / "SKILL.md"
+
+
 def _shared_signals() -> dict[str, str]:
     return {
         "delivery": "Gateway confirms when a message was queued or claimed.",
@@ -293,6 +297,7 @@ def runtime_type_list() -> list[dict[str, Any]]:
 def agent_template_catalog() -> dict[str, dict[str, Any]]:
     repo_root = _repo_root()
     skill_path = _gateway_setup_skill_path()
+    composio_skill_path = _gateway_composio_skill_path()
     runtime_signals = {
         key: runtime_type_definition(key)["signals"]
         for key in ("echo", "exec", "hermes_plugin", "hermes_sentinel", "sentinel_cli", "claude_code_channel", "inbox")
@@ -412,8 +417,8 @@ def agent_template_catalog() -> dict[str, dict[str, Any]]:
                 "Pass `--connector-ref <name>` when adding this agent.",
                 "Optional: `pip install langgraph` for a one-node StateGraph wrapper (same logic without it).",
             ],
-            "setup_skill": "gateway-agent-setup",
-            "setup_skill_path": str(skill_path),
+            "setup_skill": "gateway-composio-connectors",
+            "setup_skill_path": str(composio_skill_path),
             "defaults": {
                 "runtime_type": "exec",
                 "exec_command": "python3 examples/gateway_langgraph_composio/langgraph_composio_bridge.py",

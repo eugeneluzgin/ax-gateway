@@ -1,8 +1,10 @@
 # gateway_langgraph_composio — LangGraph + Gateway Composio connector demo
 
 Runnable example showing how a Gateway-managed LangGraph agent can use the
-**connector toolbelt** (phases 1–6) instead of dumping thousands of Composio
-tools into context.
+**connector toolbelt** instead of dumping thousands of Composio tools into context.
+
+Operator reference: [`docs/composio-integration.md`](../../docs/composio-integration.md).  
+Agent skill: [`skills/gateway-composio-connectors/SKILL.md`](../../skills/gateway-composio-connectors/SKILL.md).
 
 ## What it proves
 

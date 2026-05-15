@@ -346,6 +346,14 @@ That flow is for:
 The browser UI is a human-readable view over the same Gateway state, but the
 setup flow itself must stay agent-operable through the CLI and local API.
 
+## Gateway Composio Connectors
+
+When the job is outbound Composio tools (registry, managed auth, intent search,
+policy, execute, or `langgraph_composio` agents), use
+[`gateway-composio-connectors`](gateway-composio-connectors/SKILL.md) and
+`docs/composio-integration.md`. Do not store Composio API keys in connector
+config JSON or agent registry rows.
+
 ## Troubleshooting
 
 | Error | Meaning | Fix |

@@ -30,6 +30,7 @@ Use this skill when the task is:
    - `echo_test`
    - `ollama`
    - `hermes`
+   - `langgraph` / `langgraph_composio` (exec bridges; Composio variant needs a connector)
    - `claude_code_channel`
    - `pass_through`
 
@@ -74,7 +75,12 @@ uv run ax gateway agents add northstar --template hermes --workdir /absolute/pat
 uv run ax gateway agents add ollama-bot --template ollama
 uv run ax gateway agents add orion --template claude_code_channel --workdir /absolute/path/to/claude-workspace
 uv run ax gateway agents add codex-pass-through --template pass_through
+uv run ax gateway agents add composio-graph --template langgraph_composio --connector-ref my_composio
 ```
+
+For Composio outbound tools (registry, auth, search, execute), use the companion
+skill [`gateway-composio-connectors`](../gateway-composio-connectors/SKILL.md) and
+`docs/composio-integration.md` instead of embedding API keys in agent config.
 
 For Hermes and Claude Code Channel, always choose the directory the agent will
 actually run from. Do not let setup default to the `ax-cli` checkout just

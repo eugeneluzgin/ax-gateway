@@ -64,6 +64,25 @@ Use `hermes_sentinel` for coding sentinel QA. Avoid using a one-shot `exec`
 bridge as proof that `dev_sentinel` is fixed. It can prove Gateway dispatch,
 but not the session continuity that made the old sentinel setup useful.
 
+### Outbound connectors (Composio)
+
+Gateway can register **outbound connectors**—provider toolbelts brokered locally,
+separate from Claude Code `.mcp.json` or remote aX MCP.
+
+- Registry: `connectors.json` under the Gateway dir (no secrets in rows).
+- Auth: managed `connectors/auth/<id>.env` or external env paths via `auth_ref`.
+- CLI: `ax gateway connectors …` (list, auth, `tools search`, `call`).
+- Policy: `allowed_tools` / `denied_tools` fnmatch on catalog, search, and execute.
+- Activity: `connector_tool_*` events in `activity.jsonl` on execute.
+
+The `langgraph_composio` template runs a demo bridge that intent-searches
+Composio per mention and optionally executes `RUN:<TOOL_SLUG> {json}` through
+the connector layer. Operators pass `--connector-ref` when adding the agent.
+
+Full setup, security rules, and troubleshooting:
+[composio-integration.md](composio-integration.md). Agent skill:
+`skills/gateway-composio-connectors/SKILL.md`.
+
 ## Preferred Runtime Patterns
 
 ### Hermes Sentinel
