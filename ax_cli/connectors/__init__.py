@@ -10,12 +10,18 @@ Package layout:
 - :mod:`auth` — managed ``.env`` files and external auth paths
 - :mod:`envfile` — dotenv parsing for auth files
 - :mod:`types` — ``TypedDict`` shapes for registry rows
+- :mod:`activity` — Gateway activity.jsonl attribution for connector tools
 - :mod:`providers` — provider adapters (Composio tool execution)
 
 Import from this package (``from ax_cli.connectors import …``) rather than
 submodules unless you are extending the connector layer.
 """
 
+from .activity import (
+    connector_activity_fields,
+    record_connector_tool_finished,
+    record_connector_tool_started,
+)
 from .auth import (
     AUTH_REF_MANAGED,
     connectors_auth_env_base,
@@ -63,6 +69,7 @@ __all__ = [
     "ToolCallResult",
     "adapter_for_connector",
     "add_connector",
+    "connector_activity_fields",
     "connectors_auth_env_base",
     "connectors_registry_path",
     "default_connectors_registry",
@@ -71,6 +78,8 @@ __all__ = [
     "ensure_managed_auth_file",
     "execute_connector_tool",
     "find_connector",
+    "record_connector_tool_finished",
+    "record_connector_tool_started",
     "list_connectors",
     "load_connector_auth_env",
     "load_connectors_registry",

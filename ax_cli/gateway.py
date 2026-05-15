@@ -249,6 +249,10 @@ GATEWAY_ACTIVITY_EVENTS: dict[str, str] = {
     "tool_started": "tool",
     "tool_call_recorded": "tool",
     "tool_call_record_failed": "tool",
+    # connector outbound toolbelt (Composio, etc.)
+    "connector_tool_started": "tool",
+    "connector_tool_completed": "tool",
+    "connector_tool_failed": "result",
     # reply: agent posted a reply
     "reply_sent": "reply",
     # channel bridge lifecycle

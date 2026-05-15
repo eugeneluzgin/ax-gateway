@@ -22,6 +22,13 @@ MAX_CONNECTOR_ID_LEN = 128
 FILE_MODE_SECRET = 0o600
 FILE_MODE_DIR = 0o700
 
+# Gateway activity.jsonl event names (see GATEWAY_ACTIVITY_EVENTS in ax_cli.gateway).
+CONNECTOR_ACTIVITY_EVENTS: dict[str, str] = {
+    "started": "connector_tool_started",
+    "completed": "connector_tool_completed",
+    "failed": "connector_tool_failed",
+}
+
 
 class _UnsetType:
     __slots__ = ()
