@@ -45,10 +45,13 @@ from ..commands.bootstrap import (
 from ..config import resolve_space_id, resolve_user_base_url, resolve_user_token
 from ..connectors import (
     AUTH_REF_MANAGED,
+    ConnectorProviderError,
+    SUPPORTED_PROVIDERS,
     add_connector,
     connectors_registry_path,
     delete_managed_auth_file,
     ensure_managed_auth_file,
+    execute_connector_tool,
     find_connector,
     list_connectors,
     load_connectors_registry,
@@ -478,6 +481,62 @@ def connectors_set(
         print_json({"registry_path": str(connectors_registry_path()), "connector": dict(updated)})
         return
     err_console.print(f"[green]Updated connector[/green] {updated.get('name')!r}")
+
+
+@connectors_app.command("call")
+def connectors_call(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    tool: str = typer.Option(..., "--tool", "-t", help="Composio tool slug (e.g. GITHUB_LIST_STARGAZERS)"),
+    args_json: str = typer.Option("{}", "--args-json", help="JSON object of tool arguments"),
+    version: str | None = typer.Option(None, "--version", help="Optional Composio tool version"),
+    connected_account_id: str | None = typer.Option(
+        None,
+        "--connected-account-id",
+        help="Optional Composio connected account id",
+    ),
+    as_json: bool = JSON_OPTION,
+):
+    """Execute one outbound tool via the connector's provider adapter."""
+    try:
+        arguments = _connectors_parse_json_object(args_json, label="--args-json")
+        result = execute_connector_tool(
+            ref,
+            tool,
+            arguments,
+            version=version,
+            connected_account_id=connected_account_id,
+        )
+    except ConnectorProviderError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except typer.BadParameter:
+        raise
+    payload = result.to_dict()
+    if as_json:
+        print_json(payload)
+        raise typer.Exit(0 if result.successful else 1)
+    err_console.print(f"[bold]ax gateway connectors call {ref}[/bold]")
+    err_console.print(f"  tool = {result.tool_slug}")
+    err_console.print(f"  successful = {result.successful}")
+    if result.log_id:
+        err_console.print(f"  log_id = {result.log_id}")
+    if result.error:
+        err_console.print(f"  error = {result.error}")
+    if result.data is not None:
+        err_console.print(f"  data = {json.dumps(result.data, default=str, sort_keys=True)}")
+    raise typer.Exit(0 if result.successful else 1)
+
+
+@connectors_app.command("providers")
+def connectors_providers(as_json: bool = JSON_OPTION):
+    """List connector provider ids supported for tool execution."""
+    rows = [{"provider": pid} for pid in sorted(SUPPORTED_PROVIDERS)]
+    if as_json:
+        print_json({"providers": rows})
+        return
+    err_console.print("[bold]Supported connector providers[/bold]")
+    for pid in sorted(SUPPORTED_PROVIDERS):
+        err_console.print(f"  - {pid}")
 
 
 @connectors_auth_app.command("bind-managed")

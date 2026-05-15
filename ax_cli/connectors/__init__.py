@@ -1,6 +1,6 @@
-"""Gateway outbound connectors: registry, auth storage, and future provider adapters.
+"""Gateway outbound connectors: registry, auth storage, and provider adapters.
 
-Package layout (phases 1–3):
+Package layout:
 
 - :mod:`constants` — schema version, ``AUTH_REF_MANAGED``, validation limits
 - :mod:`paths` — ``connectors.json`` and managed auth directory paths
@@ -10,6 +10,7 @@ Package layout (phases 1–3):
 - :mod:`auth` — managed ``.env`` files and external auth paths
 - :mod:`envfile` — dotenv parsing for auth files
 - :mod:`types` — ``TypedDict`` shapes for registry rows
+- :mod:`providers` — provider adapters (Composio tool execution)
 
 Import from this package (``from ax_cli.connectors import …``) rather than
 submodules unless you are extending the connector layer.
@@ -31,6 +32,13 @@ from .auth import (
 )
 from .constants import CONNECTORS_SCHEMA_VERSION
 from .paths import connectors_registry_path
+from .providers import (
+    SUPPORTED_PROVIDERS,
+    ConnectorProviderError,
+    ToolCallResult,
+    adapter_for_connector,
+    execute_connector_tool,
+)
 from .registry import (
     add_connector,
     default_connectors_registry,
@@ -48,8 +56,12 @@ from .types import ConnectorRecord, ConnectorRegistry
 __all__ = [
     "AUTH_REF_MANAGED",
     "CONNECTORS_SCHEMA_VERSION",
+    "ConnectorProviderError",
     "ConnectorRecord",
     "ConnectorRegistry",
+    "SUPPORTED_PROVIDERS",
+    "ToolCallResult",
+    "adapter_for_connector",
     "add_connector",
     "connectors_auth_env_base",
     "connectors_registry_path",
@@ -57,6 +69,7 @@ __all__ = [
     "delete_managed_auth_file",
     "ensure_connectors_auth_env_dir",
     "ensure_managed_auth_file",
+    "execute_connector_tool",
     "find_connector",
     "list_connectors",
     "load_connector_auth_env",

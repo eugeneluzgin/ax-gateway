@@ -13,6 +13,8 @@ import ax_cli.connectors.validation as validation_mod
 
 
 def test_public_api_matches_submodules():
+    import ax_cli.connectors.providers as providers_mod
+
     assert connectors.AUTH_REF_MANAGED is constants_mod.AUTH_REF_MANAGED
     assert connectors.CONNECTORS_SCHEMA_VERSION is constants_mod.CONNECTORS_SCHEMA_VERSION
     assert connectors.connectors_registry_path is paths_mod.connectors_registry_path
@@ -20,6 +22,8 @@ def test_public_api_matches_submodules():
     assert connectors.load_connectors_registry is registry_mod.load_connectors_registry
     assert connectors.parse_dotenv is envfile_mod.parse_dotenv
     assert connectors.uses_managed_auth is auth_mod.uses_managed_auth
+    assert connectors.execute_connector_tool is providers_mod.execute_connector_tool
+    assert "composio" in connectors.SUPPORTED_PROVIDERS
 
 
 def test_package_exports_documented_symbols():
