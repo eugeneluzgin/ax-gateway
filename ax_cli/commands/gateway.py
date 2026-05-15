@@ -45,20 +45,22 @@ from ..commands.bootstrap import (
 from ..config import resolve_space_id, resolve_user_base_url, resolve_user_token
 from ..connectors import (
     AUTH_REF_MANAGED,
-    ConnectorProviderError,
     SUPPORTED_PROVIDERS,
+    ConnectorProviderError,
     add_connector,
     connectors_registry_path,
     delete_managed_auth_file,
     ensure_managed_auth_file,
     execute_connector_tool,
     find_connector,
+    list_connector_tools,
     list_connectors,
     load_connectors_registry,
     public_auth_status,
     release_managed_auth_if_unused,
     remove_connector,
     save_connectors_registry,
+    search_connector_tools,
     update_connector,
     uses_managed_auth,
     write_managed_auth_from_file,
@@ -154,8 +156,14 @@ connectors_auth_app = typer.Typer(
     help="Connector auth files (Gateway-managed or external path); never prints secret values",
     no_args_is_help=True,
 )
+connectors_tools_app = typer.Typer(
+    name="tools",
+    help="List and search connector tools (Composio catalog and intent search)",
+    no_args_is_help=True,
+)
 app.add_typer(connectors_app, name="connectors")
 connectors_app.add_typer(connectors_auth_app, name="auth")
+connectors_app.add_typer(connectors_tools_app, name="tools")
 
 _STATE_STYLES = {
     "running": "green",
@@ -524,6 +532,115 @@ def connectors_call(
         err_console.print(f"  error = {result.error}")
     if result.data is not None:
         err_console.print(f"  data = {json.dumps(result.data, default=str, sort_keys=True)}")
+    raise typer.Exit(0 if result.successful else 1)
+
+
+@connectors_tools_app.command("list")
+def connectors_tools_list(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    query: str | None = typer.Option(None, "--query", "-q", help="Composio catalog text search"),
+    toolkit: str | None = typer.Option(None, "--toolkit", help="Filter by toolkit slug (e.g. github)"),
+    limit: int | None = typer.Option(None, "--limit", help="Max tools to return (default from connector config)"),
+    as_json: bool = JSON_OPTION,
+):
+    """List tools available to a connector (Composio API + Gateway allow/deny policy)."""
+    try:
+        payload = list_connector_tools(
+            ref,
+            query=query,
+            toolkit_slug=toolkit,
+            limit=limit,
+        )
+    except ConnectorProviderError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if as_json:
+        print_json(payload)
+        return
+    err_console.print(f"[bold]ax gateway connectors tools list {ref}[/bold]")
+    err_console.print(f"  count = {payload.get('count')}")
+    if payload.get("policy_applied"):
+        err_console.print("  policy_applied = true")
+    tools = payload.get("tools") or []
+    if not tools:
+        err_console.print("  (no tools)")
+        return
+    print_table(
+        ["slug", "name", "toolkit"],
+        [
+            {
+                "slug": row.get("slug"),
+                "name": row.get("name"),
+                "toolkit": row.get("toolkit_slug") or "-",
+            }
+            for row in tools
+            if isinstance(row, dict)
+        ],
+        keys=["slug", "name", "toolkit"],
+    )
+
+
+@connectors_tools_app.command("search")
+def connectors_tools_search(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    use_case: str = typer.Option(..., "--use-case", "-u", help="Natural-language task description"),
+    mode: str = typer.Option(
+        "auto",
+        "--mode",
+        help="Search mode: auto (intent then catalog), intent (COMPOSIO_SEARCH_TOOLS), catalog (query only)",
+    ),
+    known_fields: str | None = typer.Option(
+        None,
+        "--known-fields",
+        help="Optional known_fields hint for Composio intent search (key:value pairs)",
+    ),
+    session_id: str | None = typer.Option(None, "--session-id", help="Reuse Composio search session id"),
+    limit: int | None = typer.Option(None, "--limit", help="Max tools when falling back to catalog search"),
+    as_json: bool = JSON_OPTION,
+):
+    """Search tools by intent (Composio COMPOSIO_SEARCH_TOOLS) with Gateway policy filtering."""
+    normalized_mode = str(mode or "auto").strip().lower()
+    if normalized_mode not in {"auto", "intent", "catalog"}:
+        err_console.print("[red]--mode must be auto, intent, or catalog.[/red]")
+        raise typer.Exit(1)
+    try:
+        result = search_connector_tools(
+            ref,
+            use_case,
+            mode=normalized_mode,  # type: ignore[arg-type]
+            known_fields=known_fields,
+            session_id=session_id,
+            limit=limit,
+        )
+    except ConnectorProviderError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    payload = result.to_dict()
+    if as_json:
+        print_json(payload)
+        raise typer.Exit(0 if result.successful else 1)
+    err_console.print(f"[bold]ax gateway connectors tools search {ref}[/bold]")
+    err_console.print(f"  mode = {result.mode}")
+    err_console.print(f"  successful = {result.successful}")
+    if result.session_id:
+        err_console.print(f"  session_id = {result.session_id}")
+    if result.error:
+        err_console.print(f"  error = {result.error}")
+    if not result.tools:
+        err_console.print("  (no tools matched policy)")
+        raise typer.Exit(0 if result.successful else 1)
+    print_table(
+        ["slug", "name", "description"],
+        [
+            {
+                "slug": tool.slug,
+                "name": tool.name,
+                "description": (tool.description or "")[:80],
+            }
+            for tool in result.tools
+        ],
+        keys=["slug", "name", "description"],
+    )
     raise typer.Exit(0 if result.successful else 1)
 
 

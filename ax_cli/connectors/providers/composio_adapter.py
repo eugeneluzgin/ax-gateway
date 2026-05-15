@@ -88,6 +88,47 @@ class ComposioAdapter:
         if not self._user_id:
             raise ConnectorProviderError("Composio user_id is empty")
 
+    def _headers(self) -> dict[str, str]:
+        return {"x-api-key": self._api_key, "Content-Type": "application/json"}
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        try:
+            if self._client is not None:
+                return self._client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=self._headers(),
+                    timeout=self._timeout,
+                )
+            with httpx.Client(timeout=self._timeout) as client:
+                return client.request(method, url, params=params, json=json_body, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ConnectorProviderError(f"Composio request failed: {exc}") from exc
+
+    def get_tools(self, params: dict[str, Any]) -> dict[str, Any]:
+        """``GET /api/v3.1/tools`` — Composio catalog with query/toolkit filters."""
+        url = f"{self._base_url}/api/v3.1/tools"
+        response = self._request("GET", url, params=params)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ConnectorProviderError("Composio tools list returned non-JSON response") from exc
+        if not isinstance(payload, dict):
+            raise ConnectorProviderError("Composio tools list returned unexpected payload")
+        if response.status_code >= 400:
+            err = payload.get("error") or payload.get("message") or response.reason_phrase
+            raise ConnectorProviderError(f"Composio tools list failed: {err}")
+        return payload
+
     def execute_tool(
         self,
         tool_slug: str,
@@ -109,17 +150,7 @@ class ComposioAdapter:
             body["connected_account_id"] = str(connected_account_id).strip()
 
         url = f"{self._base_url}/api/v3/tools/execute/{slug}"
-        headers = {"x-api-key": self._api_key, "Content-Type": "application/json"}
-
-        try:
-            if self._client is not None:
-                response = self._client.post(url, json=body, headers=headers, timeout=self._timeout)
-            else:
-                with httpx.Client(timeout=self._timeout) as client:
-                    response = client.post(url, json=body, headers=headers)
-        except httpx.HTTPError as exc:
-            raise ConnectorProviderError(f"Composio request failed: {exc}") from exc
-
+        response = self._request("POST", url, json_body=body)
         return self._parse_response(slug, response)
 
     def _parse_response(self, tool_slug: str, response: httpx.Response) -> ToolCallResult:

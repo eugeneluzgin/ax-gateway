@@ -11,6 +11,7 @@ Package layout:
 - :mod:`envfile` — dotenv parsing for auth files
 - :mod:`types` — ``TypedDict`` shapes for registry rows
 - :mod:`activity` — Gateway activity.jsonl attribution for connector tools
+- :mod:`filtering` — Gateway allow/deny policy on tool slugs
 - :mod:`providers` — provider adapters (Composio tool execution)
 
 Import from this package (``from ax_cli.connectors import …``) rather than
@@ -37,13 +38,22 @@ from .auth import (
     write_managed_auth_from_file,
 )
 from .constants import CONNECTORS_SCHEMA_VERSION
+from .filtering import (
+    ToolFilterPolicy,
+    assert_tool_allowed,
+    is_tool_allowed,
+    resolve_tool_filter_policy,
+)
 from .paths import connectors_registry_path
 from .providers import (
     SUPPORTED_PROVIDERS,
     ConnectorProviderError,
     ToolCallResult,
+    ToolSearchResult,
     adapter_for_connector,
     execute_connector_tool,
+    list_connector_tools,
+    search_connector_tools,
 )
 from .registry import (
     add_connector,
@@ -67,7 +77,14 @@ __all__ = [
     "ConnectorRegistry",
     "SUPPORTED_PROVIDERS",
     "ToolCallResult",
+    "ToolFilterPolicy",
+    "ToolSearchResult",
     "adapter_for_connector",
+    "assert_tool_allowed",
+    "is_tool_allowed",
+    "list_connector_tools",
+    "resolve_tool_filter_policy",
+    "search_connector_tools",
     "add_connector",
     "connector_activity_fields",
     "connectors_auth_env_base",

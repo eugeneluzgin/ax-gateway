@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from ax_cli.connectors.activity import (
     record_connector_tool_finished,
     record_connector_tool_started,
 )
+from ax_cli.connectors.filtering import (
+    assert_tool_allowed,
+    resolve_tool_filter_policy,
+)
 from ax_cli.connectors.registry import find_connector, load_connectors_registry
 
-from .base import ConnectorProviderError, ToolCallResult
+from .base import ConnectorProviderError, ToolCallResult, ToolSearchResult
+from .composio_adapter import PROVIDER_ID
+from .composio_catalog import (
+    list_composio_tools,
+    search_composio_tools_catalog,
+    search_composio_tools_intent,
+)
 from .registry import get_provider_adapter
+
+SearchMode = Literal["catalog", "intent", "auto"]
 
 
 def adapter_for_connector(connector: dict[str, Any]) -> Any:
@@ -27,6 +39,97 @@ def adapter_for_connector(connector: dict[str, Any]) -> Any:
     return get_provider_adapter(provider, connector)
 
 
+def _require_connector_row(
+    registry: dict[str, Any] | None,
+    connector_ref: str,
+) -> dict[str, Any]:
+    reg = registry if registry is not None else load_connectors_registry()
+    row = find_connector(reg, connector_ref)
+    if not row:
+        raise ConnectorProviderError(f"unknown connector: {connector_ref!r}")
+    if not bool(row.get("enabled", True)):
+        raise ConnectorProviderError(f"connector {row.get('name')!r} is disabled")
+    return row
+
+
+def list_connector_tools(
+    connector_ref: str,
+    *,
+    registry: dict[str, Any] | None = None,
+    query: str | None = None,
+    toolkit_slug: str | None = None,
+    tool_slugs: list[str] | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """List tools for a connector (Composio catalog API + Gateway policy)."""
+    row = _require_connector_row(registry, connector_ref)
+    provider = str(row.get("provider") or "").strip().lower()
+    if provider != PROVIDER_ID:
+        raise ConnectorProviderError(f"tool listing is not implemented for provider {provider!r}")
+    policy = resolve_tool_filter_policy(row)
+    adapter = adapter_for_connector(row)
+    page = list_composio_tools(
+        adapter,
+        policy,
+        query=query,
+        toolkit_slug=toolkit_slug,
+        tool_slugs=tool_slugs,
+        limit=limit,
+        cursor=cursor,
+    )
+    page["connector_name"] = row.get("name")
+    page["provider"] = provider
+    return page
+
+
+def search_connector_tools(
+    connector_ref: str,
+    use_case: str,
+    *,
+    registry: dict[str, Any] | None = None,
+    mode: SearchMode = "auto",
+    known_fields: str | None = None,
+    session_id: str | None = None,
+    limit: int | None = None,
+) -> ToolSearchResult:
+    """Search tools by natural-language use case (Composio intent or catalog query)."""
+    row = _require_connector_row(registry, connector_ref)
+    provider = str(row.get("provider") or "").strip().lower()
+    if provider != PROVIDER_ID:
+        raise ConnectorProviderError(f"tool search is not implemented for provider {provider!r}")
+    policy = resolve_tool_filter_policy(row)
+    adapter = adapter_for_connector(row)
+    cfg = row.get("config") if isinstance(row.get("config"), dict) else {}
+    configured_mode = str(cfg.get("search_mode") or "auto").strip().lower()
+    effective_mode = mode if mode != "auto" else configured_mode  # type: ignore[assignment]
+    if effective_mode not in {"catalog", "intent", "auto"}:
+        effective_mode = "auto"
+
+    if effective_mode == "catalog":
+        result = search_composio_tools_catalog(adapter, policy, use_case, limit=limit)
+    elif effective_mode == "intent":
+        result = search_composio_tools_intent(
+            adapter,
+            policy,
+            use_case,
+            known_fields=known_fields,
+            session_id=session_id,
+        )
+    else:
+        # Prefer Composio intent search; fall back to catalog query on failure.
+        result = search_composio_tools_intent(
+            adapter,
+            policy,
+            use_case,
+            known_fields=known_fields,
+            session_id=session_id,
+        )
+        if not result.successful or not result.tools:
+            result = search_composio_tools_catalog(adapter, policy, use_case, limit=limit)
+    return result
+
+
 def execute_connector_tool(
     connector_ref: str,
     tool_slug: str,
@@ -36,12 +139,17 @@ def execute_connector_tool(
     version: str | None = None,
     connected_account_id: str | None = None,
     record_activity: bool = True,
+    skip_policy_check: bool = False,
 ) -> ToolCallResult:
     """Load connector by name/id and execute ``tool_slug`` via its provider adapter."""
     reg = registry if registry is not None else load_connectors_registry()
     row = find_connector(reg, connector_ref)
     if not row:
         raise ConnectorProviderError(f"unknown connector: {connector_ref!r}")
+
+    policy = resolve_tool_filter_policy(row)
+    if not skip_policy_check:
+        assert_tool_allowed(tool_slug, policy, connector_name=str(row.get("name") or ""))
 
     tool_call_id = str(uuid.uuid4())
     if record_activity:
