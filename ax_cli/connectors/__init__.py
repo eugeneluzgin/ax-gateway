@@ -1,5 +1,19 @@
 """Gateway outbound connector registry (tool providers, MCP backends, etc.)."""
 
+from .auth import (
+    AUTH_REF_MANAGED,
+    connectors_auth_env_base,
+    delete_managed_auth_file,
+    ensure_connectors_auth_env_dir,
+    ensure_managed_auth_file,
+    load_connector_auth_env,
+    parse_dotenv,
+    public_auth_status,
+    release_managed_auth_if_unused,
+    resolve_auth_env_path,
+    uses_managed_auth,
+    write_managed_auth_from_file,
+)
 from .registry import (
     CONNECTORS_SCHEMA_VERSION,
     add_connector,
@@ -16,16 +30,28 @@ from .registry import (
 )
 
 __all__ = [
+    "AUTH_REF_MANAGED",
     "CONNECTORS_SCHEMA_VERSION",
     "add_connector",
+    "connectors_auth_env_base",
     "connectors_registry_path",
     "default_connectors_registry",
+    "delete_managed_auth_file",
+    "ensure_connectors_auth_env_dir",
+    "ensure_managed_auth_file",
     "find_connector",
     "list_connectors",
+    "load_connector_auth_env",
     "load_connectors_registry",
     "normalize_connector_record",
+    "parse_dotenv",
+    "public_auth_status",
+    "release_managed_auth_if_unused",
     "remove_connector",
+    "resolve_auth_env_path",
     "save_connectors_registry",
     "update_connector",
+    "uses_managed_auth",
     "validate_connector_record",
+    "write_managed_auth_from_file",
 ]

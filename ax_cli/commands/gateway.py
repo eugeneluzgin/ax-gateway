@@ -43,6 +43,15 @@ from ..commands.bootstrap import (
     _polish_metadata,
 )
 from ..config import resolve_space_id, resolve_user_base_url, resolve_user_token
+from ..connectors.auth import (
+    AUTH_REF_MANAGED,
+    delete_managed_auth_file,
+    ensure_managed_auth_file,
+    public_auth_status,
+    release_managed_auth_if_unused,
+    uses_managed_auth,
+    write_managed_auth_from_file,
+)
 from ..connectors.registry import (
     add_connector,
     connectors_registry_path,
@@ -139,7 +148,13 @@ connectors_app = typer.Typer(
     help="Manage the Gateway connector registry (outbound tool providers)",
     no_args_is_help=True,
 )
+connectors_auth_app = typer.Typer(
+    name="auth",
+    help="Connector auth files (Gateway-managed or external path); never prints secret values",
+    no_args_is_help=True,
+)
 app.add_typer(connectors_app, name="connectors")
+connectors_app.add_typer(connectors_auth_app, name="auth")
 
 _STATE_STYLES = {
     "running": "green",
@@ -255,6 +270,11 @@ def connectors_list(as_json: bool = JSON_OPTION):
 @connectors_app.command("show")
 def connectors_show(
     ref: str = typer.Argument(..., help="Connector name or id"),
+    auth_status: bool = typer.Option(
+        False,
+        "--auth-status",
+        help="Include redacted auth summary (env key names only; never secret values).",
+    ),
     as_json: bool = JSON_OPTION,
 ):
     """Show one connector row."""
@@ -265,13 +285,24 @@ def connectors_show(
         raise typer.Exit(1)
     snapshot = dict(row)
     if as_json:
-        print_json({"registry_path": str(connectors_registry_path()), "connector": snapshot})
+        payload: dict[str, Any] = {"registry_path": str(connectors_registry_path()), "connector": snapshot}
+        if auth_status:
+            payload["auth"] = public_auth_status(dict(row))
+        print_json(payload)
         return
     err_console.print(f"[bold]ax gateway connectors show {ref}[/bold]")
     for key in ("name", "provider", "enabled", "id", "auth_ref", "created_at", "updated_at"):
         err_console.print(f"  {key} = {snapshot.get(key)}")
     err_console.print(f"  config = {json.dumps(snapshot.get('config') or {}, sort_keys=True)}")
     err_console.print(f"  metadata = {json.dumps(snapshot.get('metadata') or {}, sort_keys=True)}")
+    if auth_status:
+        st = public_auth_status(dict(row))
+        err_console.print(f"  auth.kind = {st.get('kind')}")
+        err_console.print(f"  auth.path_redacted = {st.get('path_redacted')}")
+        err_console.print(f"  auth.file_exists = {st.get('file_exists')}")
+        err_console.print(f"  auth.env_keys = {st.get('env_keys')}")
+        if st.get("error"):
+            err_console.print(f"  auth.error = {st.get('error')}")
 
 
 @connectors_app.command("add")
@@ -283,26 +314,37 @@ def connectors_add(
         "--auth-ref",
         help="Non-secret reference only (env file path, vault key). Never paste API keys here.",
     ),
+    managed_auth: bool = typer.Option(
+        False,
+        "--managed-auth",
+        help=f"Store secrets under Gateway ({AUTH_REF_MANAGED}); creates a per-connector .env file.",
+    ),
     config_json: str | None = typer.Option(None, "--config-json", help="JSON object for provider config (no secrets)"),
     metadata_json: str | None = typer.Option(None, "--metadata-json", help="JSON object for notes/tags"),
     disabled: bool = typer.Option(False, "--disabled", help="Create in disabled state"),
     as_json: bool = JSON_OPTION,
 ):
     """Register a new connector row."""
+    if managed_auth and auth_ref is not None and str(auth_ref).strip():
+        err_console.print("[red]Use either --managed-auth or --auth-ref, not both.[/red]")
+        raise typer.Exit(1)
     reg = load_connectors_registry()
     try:
         cfg = _connectors_parse_json_object(config_json, label="--config-json")
         meta = _connectors_parse_json_object(metadata_json, label="--metadata-json")
+        effective_auth_ref = AUTH_REF_MANAGED if managed_auth else auth_ref
         rec = add_connector(
             reg,
             name=name,
             provider=provider,
             enabled=not disabled,
-            auth_ref=auth_ref,
+            auth_ref=effective_auth_ref,
             config=cfg,
             metadata=meta,
         )
         save_connectors_registry(reg)
+        if managed_auth:
+            ensure_managed_auth_file(str(rec.get("id") or ""))
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
@@ -321,14 +363,22 @@ def connectors_remove(
 ):
     """Remove a connector from the registry."""
     reg = load_connectors_registry()
-    if not remove_connector(reg, ref):
+    row = find_connector(reg, ref)
+    if not row:
         err_console.print(f"[red]Unknown connector:[/red] {ref}")
+        raise typer.Exit(1)
+    cid = str(row.get("id") or "").strip()
+    was_managed = uses_managed_auth(dict(row))
+    if not remove_connector(reg, ref):
+        err_console.print(f"[red]Failed to remove connector:[/red] {ref}")
         raise typer.Exit(1)
     try:
         save_connectors_registry(reg)
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+    if was_managed and cid:
+        delete_managed_auth_file(cid)
     if as_json:
         print_json({"registry_path": str(connectors_registry_path()), "removed": ref})
         return
@@ -367,6 +417,12 @@ def connectors_set(
         )
         raise typer.Exit(1)
     reg = load_connectors_registry()
+    row_before = find_connector(reg, ref)
+    auth_snapshot = (
+        {"id": str(row_before.get("id") or ""), "auth_ref": row_before.get("auth_ref")}
+        if row_before
+        else None
+    )
     cfg: dict[str, Any] | None = None
     meta: dict[str, Any] | None = None
     if config_json is not None:
@@ -410,6 +466,11 @@ def connectors_set(
             err_console.print(f"[red]Unknown connector:[/red] {ref}")
             raise typer.Exit(1)
         save_connectors_registry(reg)
+        if auth_snapshot:
+            release_managed_auth_if_unused(
+                auth_snapshot,
+                auth_ref_after=str(updated.get("auth_ref") or "").strip() or None,
+            )
     except ValueError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
@@ -419,6 +480,117 @@ def connectors_set(
         print_json({"registry_path": str(connectors_registry_path()), "connector": dict(updated)})
         return
     err_console.print(f"[green]Updated connector[/green] {updated.get('name')!r}")
+
+
+@connectors_auth_app.command("bind-managed")
+def connectors_auth_bind_managed(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    as_json: bool = JSON_OPTION,
+):
+    """Point connector auth at Gateway-managed ``.env`` and create the file if missing."""
+    reg = load_connectors_registry()
+    row = find_connector(reg, ref)
+    if not row:
+        err_console.print(f"[red]Unknown connector:[/red] {ref}")
+        raise typer.Exit(1)
+    cid = str(row.get("id") or "").strip()
+    if not cid:
+        err_console.print("[red]Connector row is missing id.[/red]")
+        raise typer.Exit(1)
+    try:
+        update_connector(reg, ref, auth_ref=AUTH_REF_MANAGED)
+        ensure_managed_auth_file(cid)
+        save_connectors_registry(reg)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if as_json:
+        row2 = find_connector(reg, ref)
+        print_json(
+            {
+                "registry_path": str(connectors_registry_path()),
+                "auth_ref": AUTH_REF_MANAGED,
+                "auth": public_auth_status(dict(row2 or {})),
+                "connector_id": cid,
+            }
+        )
+        return
+    err_console.print(f"[green]Managed auth bound[/green] for {ref!r}")
+    st = public_auth_status(dict(find_connector(reg, ref) or {}))
+    err_console.print(f"  auth.path_redacted = {st.get('path_redacted')}")
+
+
+@connectors_auth_app.command("status")
+def connectors_auth_status_cmd(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    as_json: bool = JSON_OPTION,
+):
+    """Show redacted auth storage status (key names only; never values)."""
+    reg = load_connectors_registry()
+    row = find_connector(reg, ref)
+    if not row:
+        err_console.print(f"[red]Unknown connector:[/red] {ref}")
+        raise typer.Exit(1)
+    st = public_auth_status(dict(row))
+    if as_json:
+        print_json({"registry_path": str(connectors_registry_path()), "connector_ref": ref, "auth": st})
+        return
+    err_console.print(f"[bold]ax gateway connectors auth status {ref}[/bold]")
+    err_console.print(f"  kind = {st.get('kind')}")
+    err_console.print(f"  path_redacted = {st.get('path_redacted')}")
+    err_console.print(f"  file_exists = {st.get('file_exists')}")
+    err_console.print(f"  env_keys = {st.get('env_keys')}")
+    if st.get("error"):
+        err_console.print(f"  error = {st.get('error')}")
+
+
+@connectors_auth_app.command("write")
+def connectors_auth_write(
+    ref: str = typer.Argument(..., help="Connector name or id"),
+    from_file: Path = typer.Option(
+        ...,
+        "--from-file",
+        help="Existing file to copy into the managed connector .env (atomic replace).",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    as_json: bool = JSON_OPTION,
+):
+    """Copy a file into the managed auth env (requires ``auth_ref`` = gateway:managed)."""
+    reg = load_connectors_registry()
+    row = find_connector(reg, ref)
+    if not row:
+        err_console.print(f"[red]Unknown connector:[/red] {ref}")
+        raise typer.Exit(1)
+    if not uses_managed_auth(dict(row)):
+        err_console.print(
+            f"[red]Connector is not using managed auth.[/red] Run "
+            f"`ax gateway connectors auth bind-managed {ref}` first."
+        )
+        raise typer.Exit(1)
+    cid = str(row.get("id") or "").strip()
+    if not cid:
+        err_console.print("[red]Connector row is missing id.[/red]")
+        raise typer.Exit(1)
+    try:
+        dest = write_managed_auth_from_file(cid, from_file)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if as_json:
+        print_json(
+            {
+                "registry_path": str(connectors_registry_path()),
+                "connector_id": cid,
+                "dest_path_redacted": public_auth_status(dict(find_connector(reg, ref) or {})).get(
+                    "path_redacted"
+                ),
+                "bytes_written_hint": dest.stat().st_size if dest.is_file() else None,
+            }
+        )
+        return
+    err_console.print(f"[green]Wrote managed auth[/green] for {ref!r} from {from_file}")
 
 
 # ---------------------------------------------------------------------------
