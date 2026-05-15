@@ -48,6 +48,7 @@ from ..connectors import (
     SUPPORTED_PROVIDERS,
     ConnectorProviderError,
     add_connector,
+    connectors_auth_env_base,
     connectors_registry_path,
     delete_managed_auth_file,
     ensure_managed_auth_file,
@@ -3289,6 +3290,164 @@ def _no_invoking_principal_error() -> ValueError:
     )
 
 
+def _linked_agents_for_connector_row(row: dict[str, Any], registry: dict[str, Any]) -> list[str]:
+    """Gateway agent names that reference this connector by name or id."""
+    cid = str(row.get("id") or "").strip().lower()
+    cname = str(row.get("name") or "").strip().lower()
+    linked: list[str] = []
+    for agent in registry.get("agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        cref = str(agent.get("connector_ref") or "").strip().lower()
+        if not cref:
+            continue
+        if cref == cname or (cid and cref == cid):
+            name = str(agent.get("name") or "").strip()
+            if name:
+                linked.append(name)
+    return linked
+
+
+def _connector_summary_row(row: dict[str, Any], *, registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    reg = registry or load_gateway_registry()
+    auth = public_auth_status(dict(row))
+    cfg = row.get("config") if isinstance(row.get("config"), dict) else {}
+    auth_ready = bool(auth.get("file_exists")) and bool(auth.get("env_keys")) and not auth.get("error")
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "provider": row.get("provider"),
+        "enabled": bool(row.get("enabled", True)),
+        "auth_ref": row.get("auth_ref"),
+        "auth_kind": auth.get("kind"),
+        "auth_ready": auth_ready,
+        "auth_env_keys": list(auth.get("env_keys") or []),
+        "auth_path_redacted": auth.get("path_redacted"),
+        "auth_error": auth.get("error"),
+        "linked_agents": _linked_agents_for_connector_row(row, reg),
+        "user_id": cfg.get("user_id"),
+        "search_mode": cfg.get("search_mode"),
+        "allowed_tools": cfg.get("allowed_tools") or cfg.get("allow_tools"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _connectors_list_payload(*, registry: dict[str, Any] | None = None) -> dict[str, Any]:
+    reg = load_connectors_registry()
+    gateway_registry = registry or load_gateway_registry()
+    rows = [_connector_summary_row(dict(row), registry=gateway_registry) for row in list_connectors(reg)]
+    enabled = sum(1 for row in rows if row.get("enabled"))
+    ready = sum(1 for row in rows if row.get("auth_ready"))
+    return {
+        "registry_path": str(connectors_registry_path()),
+        "auth_env_dir": str(connectors_auth_env_base()),
+        "providers": sorted(SUPPORTED_PROVIDERS),
+        "connectors": rows,
+        "count": len(rows),
+        "summary": {
+            "total": len(rows),
+            "enabled": enabled,
+            "auth_ready": ready,
+        },
+    }
+
+
+def _connector_detail_payload(ref: str, *, registry: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    reg = load_connectors_registry()
+    row = find_connector(reg, ref)
+    if not row:
+        return None
+    gateway_registry = registry or load_gateway_registry()
+    snapshot = dict(row)
+    return {
+        "registry_path": str(connectors_registry_path()),
+        "connector": snapshot,
+        "summary": _connector_summary_row(snapshot, registry=gateway_registry),
+        "auth": public_auth_status(snapshot),
+    }
+
+
+def _api_add_connector(body: dict[str, Any]) -> dict[str, Any]:
+    name = str(body.get("name") or "").strip()
+    provider = str(body.get("provider") or "").strip().lower()
+    if not name:
+        raise ValueError("connector name is required")
+    if not provider:
+        raise ValueError("connector provider is required")
+    managed_auth = bool(body.get("managed_auth"))
+    auth_ref_raw = str(body.get("auth_ref") or "").strip() or None
+    if managed_auth and auth_ref_raw:
+        raise ValueError("Use either managed_auth or auth_ref, not both")
+    cfg = body.get("config") if isinstance(body.get("config"), dict) else {}
+    meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    reg = load_connectors_registry()
+    rec = add_connector(
+        reg,
+        name=name,
+        provider=provider,
+        enabled=bool(body.get("enabled", True)),
+        auth_ref=AUTH_REF_MANAGED if managed_auth else auth_ref_raw,
+        config=cfg,
+        metadata=meta,
+    )
+    save_connectors_registry(reg)
+    if managed_auth:
+        ensure_managed_auth_file(str(rec.get("id") or ""))
+    return dict(rec)
+
+
+def _api_update_connector(ref: str, body: dict[str, Any]) -> dict[str, Any]:
+    reg = load_connectors_registry()
+    row_before = find_connector(reg, ref)
+    if not row_before:
+        raise LookupError(f"Unknown connector: {ref}")
+    auth_snapshot = {"id": str(row_before.get("id") or ""), "auth_ref": row_before.get("auth_ref")}
+    cfg: dict[str, Any] | None = body.get("config") if isinstance(body.get("config"), dict) else None
+    meta: dict[str, Any] | None = body.get("metadata") if isinstance(body.get("metadata"), dict) else None
+    patch: dict[str, Any] = {}
+    if body.get("name"):
+        patch["name"] = str(body.get("name")).strip()
+    if body.get("provider"):
+        patch["provider"] = str(body.get("provider")).strip().lower()
+    if "enabled" in body:
+        patch["enabled"] = bool(body.get("enabled"))
+    if cfg is not None:
+        patch["config"] = cfg
+    if meta is not None:
+        patch["metadata"] = meta
+    if bool(body.get("clear_auth_ref")):
+        patch["clear_auth_ref"] = True
+    elif bool(body.get("managed_auth")):
+        patch["auth_ref"] = AUTH_REF_MANAGED
+    elif "auth_ref" in body:
+        patch["auth_ref"] = str(body.get("auth_ref") or "").strip() or None
+    updated = update_connector(reg, ref, **patch)
+    if not updated:
+        raise LookupError(f"Unknown connector: {ref}")
+    if patch.get("clear_auth_ref") or ("auth_ref" in patch and patch.get("auth_ref") is None):
+        release_managed_auth_if_unused(auth_snapshot)
+    save_connectors_registry(reg)
+    if uses_managed_auth(dict(updated)):
+        ensure_managed_auth_file(str(updated.get("id") or ""))
+    return dict(updated)
+
+
+def _api_remove_connector(ref: str) -> dict[str, Any]:
+    reg = load_connectors_registry()
+    row = find_connector(reg, ref)
+    if not row:
+        raise LookupError(f"Unknown connector: {ref}")
+    cid = str(row.get("id") or "").strip()
+    was_managed = uses_managed_auth(dict(row))
+    if not remove_connector(reg, ref):
+        raise LookupError(f"Failed to remove connector: {ref}")
+    save_connectors_registry(reg)
+    if was_managed and cid:
+        delete_managed_auth_file(cid)
+    return {"removed": ref, "id": cid}
+
+
 def _status_payload(*, activity_limit: int = 10, include_hidden: bool = False) -> dict:
     daemon = daemon_status()
     ui = ui_status()
@@ -3383,6 +3542,11 @@ def _status_payload(*, activity_limit: int = 10, include_hidden: bool = False) -
             "pending_approvals": len(pending_approvals),
         },
     }
+    connector_payload = _connectors_list_payload(registry=registry)
+    payload["connectors"] = connector_payload["connectors"]
+    payload["connectors_summary"] = connector_payload["summary"]
+    payload["summary"]["connectors"] = connector_payload["summary"]["total"]
+    payload["summary"]["connectors_auth_ready"] = connector_payload["summary"]["auth_ready"]
     alerts = _gateway_alerts(payload)
     payload["alerts"] = alerts
     payload["summary"]["alert_count"] = len(alerts)
@@ -5512,6 +5676,72 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
       </div>
     </section>
 
+    <section class="panel">
+      <div class="panel-header">
+        <span>Outbound Connectors</span>
+        <span id="connectors-summary" class="caption">loading…</span>
+      </div>
+      <div class="panel-body">
+        <p class="caption">
+          Composio toolbelt rows live in the Gateway registry. Secrets belong in managed
+          <code>connectors/auth/*.env</code> only. See <code>docs/composio-integration.md</code>.
+        </p>
+        <div class="control-grid" style="grid-template-columns: 1.2fr 1fr;">
+          <div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Provider</th>
+                  <th>Enabled</th>
+                  <th>Auth</th>
+                  <th>Agents</th>
+                </tr>
+              </thead>
+              <tbody id="connector-rows">
+                <tr><td colspan="5"><div class="empty">Waiting for connectors…</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="detail-card">
+            <h3 style="margin-top:0;">Add connector</h3>
+            <form id="add-connector-form">
+              <div class="control-group">
+                <label for="connector-name">Name</label>
+                <input id="connector-name" name="name" placeholder="my_composio" required />
+              </div>
+              <div class="control-group">
+                <label for="connector-provider">Provider</label>
+                <select id="connector-provider" name="provider"><option value="composio">composio</option></select>
+              </div>
+              <div class="control-group">
+                <label for="connector-user-id">user_id</label>
+                <input id="connector-user-id" name="user_id" placeholder="Composio entity id" />
+              </div>
+              <div class="control-group">
+                <label for="connector-allowed-tools">allowed_tools</label>
+                <input id="connector-allowed-tools" name="allowed_tools" placeholder="GITHUB_*,SLACK_*" />
+              </div>
+              <label style="display:flex; gap:8px; align-items:center; margin:8px 0;">
+                <input id="connector-managed-auth" name="managed_auth" type="checkbox" checked />
+                <span>Gateway-managed auth</span>
+              </label>
+              <div class="action-row">
+                <button type="submit">Add Connector</button>
+              </div>
+              <div id="add-connector-flash" class="flash"></div>
+            </form>
+            <p class="caption" style="margin-top:12px;">
+              Then: <code>ax gateway connectors auth write &lt;name&gt; --from-file ./composio.env</code>
+            </p>
+          </div>
+        </div>
+        <div id="connector-detail" class="detail-card" style="margin-top:16px;">
+          <div class="empty">Select a connector for detail, enable/disable, and tool search.</div>
+        </div>
+      </div>
+    </section>
+
     <section class="control-grid">
       <section class="panel">
         <div class="panel-header">
@@ -5558,6 +5788,13 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
                   <input id="agent-ollama-model" name="ollama_model" list="ollama-model-options" placeholder="gemma4:latest" />
                   <datalist id="ollama-model-options"></datalist>
                   <div id="ollama-model-caption" class="caption"></div>
+                </div>
+                <div class="control-group" id="connector-ref-group" style="display:none;">
+                  <label for="agent-connector-ref">Connector ref</label>
+                  <select id="agent-connector-ref" name="connector_ref">
+                    <option value="">—</option>
+                  </select>
+                  <div class="caption">Required for langgraph_composio.</div>
                 </div>
               </div>
             </details>
@@ -5658,7 +5895,7 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
 
     <section class="panel">
       <div class="panel-body footer-note">
-        <span>Local status API: <code>/api/status</code> and <code>/api/agents/&lt;name&gt;</code></span>
+        <span>Local API: <code>/api/status</code> · <code>/api/connectors</code> · <code>/api/agents/&lt;name&gt;</code></span>
         <span>Setup skill: <code>skills/gateway-agent-setup/SKILL.md</code> · Terminal parity: <code>uv run ax gateway watch</code></span>
       </div>
     </section>
@@ -5667,6 +5904,7 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
   <script>
     const refreshMs = __REFRESH_MS__;
     let selectedAgent = null;
+    let selectedConnector = null;
     let agentTemplates = [];
     let autoRefreshPaused = false;
     let setupMode = "create";
@@ -5733,6 +5971,8 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
       execInput.value = agent.exec_command || "";
       workdirInput.value = agent.workdir || "";
       ollamaModelInput.value = agent.ollama_model || "";
+      const connectorRefInput = document.getElementById("agent-connector-ref");
+      if (connectorRefInput) connectorRefInput.value = agent.connector_ref || "";
       applySetupMode();
       setFlash("add-agent-flash", `Editing @${setupTarget}`, "success");
       document.getElementById("add-agent-form").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -5803,6 +6043,7 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
       const agentNameInput = document.getElementById("agent-name");
       const execGroup = document.getElementById("exec-command-group");
       const workdirGroup = document.getElementById("workdir-group");
+      const connectorRefGroup = document.getElementById("connector-ref-group");
       const ollamaModelGroup = document.getElementById("ollama-model-group");
       const execInput = document.getElementById("agent-exec");
       const workdirInput = document.getElementById("agent-workdir");
@@ -5925,6 +6166,8 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
         ["low confidence", summary.low_confidence_agents ?? 0, "yellow"],
         ["blocked", summary.blocked_agents ?? 0, "red"],
         ["queue depth", queueDepth, "blue"],
+        ["connectors", summary.connectors ?? 0, "cyan"],
+        ["auth ready", summary.connectors_auth_ready ?? 0, "green"],
       ];
       document.getElementById("metrics").innerHTML = metrics.map(([label, value, tone]) => `
         <article class="metric ${tone}">
@@ -5932,6 +6175,104 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
           <span>${escapeHtml(label)}</span>
         </article>
       `).join("");
+    }
+
+
+    function renderConnectors(payload) {
+      const rows = payload.connectors || [];
+      const summary = payload.connectors_summary || {};
+      document.getElementById("connectors-summary").textContent = rows.length
+        ? `${summary.total ?? rows.length} connector${rows.length === 1 ? "" : "s"} · ${summary.auth_ready ?? 0} auth ready`
+        : "no connectors registered";
+      const tbody = document.getElementById("connector-rows");
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="5"><div class="empty">No connectors yet. Add one or use the CLI.</div></td></tr>`;
+        renderConnectorDetail(null);
+        return;
+      }
+      tbody.innerHTML = rows.map((row) => {
+        const active = selectedConnector && String(selectedConnector).toLowerCase() === String(row.name || "").toLowerCase();
+        const authLabel = row.auth_ready ? "ready" : (row.auth_error || "missing");
+        const linked = (row.linked_agents || []).length ? row.linked_agents.join(", ") : "—";
+        return `
+          <tr>
+            <td colspan="5">
+              <button type="button" class="agent-button ${active ? "is-active" : ""}" data-connector-name="${escapeHtml(row.name || "")}">
+                <table><tbody><tr>
+                  <td style="width:22%"><strong>${escapeHtml(row.name || "-")}</strong></td>
+                  <td style="width:14%">${escapeHtml(row.provider || "-")}</td>
+                  <td style="width:12%"><span class="status-pill ${row.enabled ? "green" : "yellow"}">${row.enabled ? "on" : "off"}</span></td>
+                  <td style="width:18%"><span class="status-pill ${row.auth_ready ? "green" : "red"}">${escapeHtml(authLabel)}</span></td>
+                  <td style="width:34%">${escapeHtml(linked)}</td>
+                </tr></tbody></table>
+              </button>
+            </td>
+          </tr>`;
+      }).join("");
+      populateConnectorRefSelect(rows);
+    }
+
+    function populateConnectorRefSelect(rows) {
+      const select = document.getElementById("agent-connector-ref");
+      if (!select) return;
+      const current = select.value;
+      select.innerHTML = `<option value="">—</option>` + rows.map((row) =>
+        `<option value="${escapeHtml(row.name || "")}">${escapeHtml(row.name || "")}</option>`
+      ).join("");
+      if (current) select.value = current;
+    }
+
+    async function loadConnectorDetail(name) {
+      if (!name) {
+        renderConnectorDetail(null);
+        return;
+      }
+      try {
+        const payload = await apiRequest(`/api/connectors/${encodeURIComponent(name)}`);
+        renderConnectorDetail(payload);
+      } catch (error) {
+        renderConnectorDetail({ error: error.message || String(error) });
+      }
+    }
+
+    function renderConnectorDetail(payload) {
+      const panel = document.getElementById("connector-detail");
+      if (!payload || !payload.connector) {
+        const err = payload?.error;
+        panel.innerHTML = err
+          ? `<div class="flash error">${escapeHtml(err)}</div>`
+          : `<div class="empty">Select a connector for detail, enable/disable, and tool search.</div>`;
+        return;
+      }
+      const row = payload.connector;
+      const summary = payload.summary || {};
+      const auth = payload.auth || {};
+      const configJson = JSON.stringify(row.config || {}, null, 2);
+      panel.innerHTML = `
+        <div class="detail-card">
+          <div class="agent-name">${escapeHtml(row.name || "-")}</div>
+          <div class="caption">${escapeHtml(row.provider || "-")} · ${summary.enabled ? "enabled" : "disabled"}</div>
+          <div id="connector-detail-flash" class="flash"></div>
+          <dl class="detail-list">
+            <div><dt>Auth</dt><dd>${escapeHtml(auth.kind || "-")} · keys: ${escapeHtml((auth.env_keys || []).join(", ") || "none")}</dd></div>
+            <div><dt>Path</dt><dd>${escapeHtml(auth.path_redacted || "-")}</dd></div>
+            <div><dt>user_id</dt><dd>${escapeHtml(summary.user_id || "-")}</dd></div>
+            <div><dt>Linked agents</dt><dd>${escapeHtml((summary.linked_agents || []).join(", ") || "—")}</dd></div>
+          </dl>
+          <pre style="white-space:pre-wrap; font-size:12px;">${escapeHtml(configJson)}</pre>
+          <div class="action-row">
+            <button type="button" class="ghost" data-connector-action="toggle">${summary.enabled ? "Disable" : "Enable"}</button>
+            <button type="button" class="danger" data-connector-action="remove">Remove</button>
+          </div>
+          <form id="connector-search-form" class="detail-card" style="margin-top:12px;">
+            <div class="control-group">
+              <label for="connector-search-use-case">Tool search use case</label>
+              <input id="connector-search-use-case" name="use_case" placeholder="list GitHub stargazers for owner/repo" />
+            </div>
+            <div class="action-row"><button type="submit">Search tools</button></div>
+          </form>
+          <pre id="connector-search-results" style="white-space:pre-wrap; font-size:12px; margin-top:8px;"></pre>
+        </div>`;
     }
 
     function renderAlerts(payload) {
@@ -6094,6 +6435,7 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
             <div><dt>Doctor Result</dt><dd>${escapeHtml(agent.last_doctor_result?.status || "-")}</dd></div>
             <div><dt>Effective</dt><dd>${escapeHtml(agent.effective_state || "-")}</dd></div>
             <div><dt>Workdir</dt><dd>${escapeHtml(agent.workdir || "-")}</dd></div>
+            <div><dt>Connector</dt><dd>${escapeHtml(agent.connector_ref || "-")}</dd></div>
             <div><dt>Exec</dt><dd>${escapeHtml(agent.exec_command || "-")}</dd></div>
           </dl>
           <div>
@@ -6123,10 +6465,17 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
       renderOverview(payload);
       renderMetrics(payload);
       renderAlerts(payload);
+      renderConnectors(payload);
       renderAgents(payload);
       renderActivity(payload);
       if (!selectedAgent && payload.agents?.length) {
         selectedAgent = payload.agents[0].name;
+      }
+      if (!selectedConnector && payload.connectors?.length) {
+        selectedConnector = payload.connectors[0].name;
+      }
+      if (selectedConnector) {
+        await loadConnectorDetail(selectedConnector);
       }
       if (selectedAgent) {
         await loadAgentDetail(selectedAgent);
@@ -6212,6 +6561,87 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
       }
     });
 
+
+    document.getElementById("connector-rows").addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-connector-name]");
+      if (!button) return;
+      selectedConnector = button.getAttribute("data-connector-name");
+      await loadConnectorDetail(selectedConnector);
+      await tick(true);
+    });
+
+    document.getElementById("connector-detail").addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-connector-action]");
+      if (!button || !selectedConnector) return;
+      const action = button.getAttribute("data-connector-action");
+      try {
+        if (action === "remove") {
+          await apiRequest(`/api/connectors/${encodeURIComponent(selectedConnector)}`, { method: "DELETE" });
+          selectedConnector = null;
+        } else if (action === "toggle") {
+          const detail = await apiRequest(`/api/connectors/${encodeURIComponent(selectedConnector)}`);
+          const enabled = Boolean(detail.summary?.enabled);
+          await apiRequest(`/api/connectors/${encodeURIComponent(selectedConnector)}`, {
+            method: "PUT",
+            body: JSON.stringify({ enabled: !enabled }),
+          });
+        }
+        await tick(true);
+      } catch (error) {
+        setFlash("connector-detail-flash", error.message || String(error), "error");
+      }
+    });
+
+    document.getElementById("connector-detail").addEventListener("submit", async (event) => {
+      const form = event.target.closest("#connector-search-form");
+      if (!form || !selectedConnector) return;
+      event.preventDefault();
+      const data = new FormData(form);
+      const useCase = String(data.get("use_case") || "").trim();
+      if (!useCase) return;
+      try {
+        const result = await apiRequest(`/api/connectors/${encodeURIComponent(selectedConnector)}/tools/search`, {
+          method: "POST",
+          body: JSON.stringify({ use_case: useCase, mode: "auto" }),
+        });
+        const lines = (result.tools || []).map((tool) => `${tool.slug}: ${tool.name || ""}`);
+        document.getElementById("connector-search-results").textContent = lines.length
+          ? lines.join("\n")
+          : JSON.stringify(result, null, 2);
+      } catch (error) {
+        document.getElementById("connector-search-results").textContent = error.message || String(error);
+      }
+    });
+
+    document.getElementById("add-connector-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget);
+      const allowedRaw = String(data.get("allowed_tools") || "").trim();
+      const allowed = allowedRaw ? allowedRaw.split(",").map((part) => part.trim()).filter(Boolean) : [];
+      const config = {};
+      const userId = String(data.get("user_id") || "").trim();
+      if (userId) config.user_id = userId;
+      if (allowed.length) config.allowed_tools = allowed;
+      try {
+        const created = await apiRequest("/api/connectors", {
+          method: "POST",
+          body: JSON.stringify({
+            name: String(data.get("name") || "").trim(),
+            provider: String(data.get("provider") || "composio").trim(),
+            managed_auth: data.get("managed_auth") === "on",
+            config,
+          }),
+        });
+        selectedConnector = created.connector?.name || String(data.get("name") || "").trim();
+        setFlash("add-connector-flash", `Added connector ${selectedConnector}`, "success");
+        event.currentTarget.reset();
+        document.getElementById("connector-managed-auth").checked = true;
+        await tick(true);
+      } catch (error) {
+        setFlash("add-connector-flash", error.message || String(error), "error");
+      }
+    });
+
     document.getElementById("refresh-toggle").addEventListener("click", () => {
       autoRefreshPaused = !autoRefreshPaused;
       refreshButtonLabel();
@@ -6239,6 +6669,7 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
         exec_command: String(data.get("exec_command") || "").trim(),
         workdir: String(data.get("workdir") || "").trim(),
         ollama_model: String(data.get("ollama_model") || "").trim(),
+        connector_ref: String(data.get("connector_ref") || "").trim(),
         start: true,
       };
       try {
@@ -6492,6 +6923,24 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
                 status = HTTPStatus.OK if has_data else HTTPStatus.SERVICE_UNAVAILABLE
                 _write_json_response(self, payload, status=status)
                 return
+            if parsed.path == "/api/connectors":
+                _write_json_response(self, _connectors_list_payload())
+                return
+            if parsed.path.startswith("/api/connectors/"):
+                suffix = unquote(parsed.path.removeprefix("/api/connectors/")).strip()
+                if not suffix:
+                    _write_json_response(self, {"error": "connector ref required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                payload = _connector_detail_payload(suffix)
+                if payload is None:
+                    _write_json_response(
+                        self,
+                        {"error": f"Unknown connector: {suffix}"},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                _write_json_response(self, payload)
+                return
             if parsed.path.startswith("/api/agents/") and parsed.path.endswith("/inbox"):
                 name = unquote(parsed.path.removeprefix("/api/agents/").removesuffix("/inbox")).strip()
                 query = parse_qs(parsed.query)
@@ -6575,6 +7024,58 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
                     status_code = HTTPStatus.OK if payload.get("ready") else HTTPStatus.UNPROCESSABLE_ENTITY
                     _write_json_response(self, payload, status=status_code)
                     return
+                if parsed.path == "/api/connectors":
+                    try:
+                        created = _api_add_connector(body)
+                    except ValueError as exc:
+                        _write_json_response(self, {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    detail = _connector_detail_payload(str(created.get("name") or ""))
+                    _write_json_response(self, detail or {"connector": created}, status=HTTPStatus.CREATED)
+                    return
+                if parsed.path.startswith("/api/connectors/") and parsed.path.endswith("/tools/search"):
+                    ref = unquote(
+                        parsed.path.removeprefix("/api/connectors/").removesuffix("/tools/search")
+                    ).strip()
+                    use_case = str(body.get("use_case") or body.get("query") or "").strip()
+                    if not use_case:
+                        _write_json_response(
+                            self,
+                            {"error": "use_case is required"},
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    try:
+                        mode = str(body.get("mode") or "auto").strip().lower()
+                        result = search_connector_tools(
+                            ref,
+                            use_case,
+                            mode=mode,  # type: ignore[arg-type]
+                            known_fields=str(body.get("known_fields") or "").strip() or None,
+                            session_id=str(body.get("session_id") or "").strip() or None,
+                            limit=body.get("limit"),
+                        )
+                    except (ConnectorProviderError, LookupError, ValueError) as exc:
+                        _write_json_response(self, {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    _write_json_response(self, result.to_dict())
+                    return
+                if parsed.path.startswith("/api/connectors/") and parsed.path.endswith("/tools/list"):
+                    ref = unquote(
+                        parsed.path.removeprefix("/api/connectors/").removesuffix("/tools/list")
+                    ).strip()
+                    try:
+                        page = list_connector_tools(
+                            ref,
+                            query=str(body.get("query") or "").strip() or None,
+                            toolkit_slug=str(body.get("toolkit") or body.get("toolkit_slug") or "").strip() or None,
+                            limit=body.get("limit"),
+                        )
+                    except (ConnectorProviderError, LookupError, ValueError) as exc:
+                        _write_json_response(self, {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    _write_json_response(self, page)
+                    return
                 if parsed.path == "/api/agents":
                     try:
                         payload = _register_managed_agent(
@@ -6589,6 +7090,7 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
                             description=str(body.get("description") or "").strip() or None,
                             model=str(body.get("model") or "").strip() or None,
                             timeout_seconds=body.get("timeout_seconds", body.get("timeout")),
+                            connector_ref=str(body.get("connector_ref") or "").strip() or None,
                             start=bool(body.get("start", True)),
                         )
                     except UpstreamRateLimitedError as exc:
@@ -6888,8 +7390,24 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
             parsed = urlparse(self.path)
             try:
                 body = _read_json_request(self)
+                if parsed.path.startswith("/api/connectors/"):
+                    ref = unquote(parsed.path.removeprefix("/api/connectors/")).strip()
+                    try:
+                        updated = _api_update_connector(ref, body)
+                    except LookupError as exc:
+                        _write_json_response(self, {"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                        return
+                    except ValueError as exc:
+                        _write_json_response(self, {"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                    detail = _connector_detail_payload(str(updated.get("name") or ref))
+                    _write_json_response(self, detail or {"connector": updated})
+                    return
                 if parsed.path.startswith("/api/agents/"):
                     name = unquote(parsed.path.removeprefix("/api/agents/")).strip()
+                    connector_ref_kw: dict[str, Any] = {}
+                    if "connector_ref" in body:
+                        connector_ref_kw["connector_ref"] = str(body.get("connector_ref") or "").strip()
                     payload = _update_managed_agent(
                         name=name,
                         template_id=str(body.get("template_id") or "").strip() or None,
@@ -6903,6 +7421,7 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
                         if "timeout_seconds" in body or "timeout" in body
                         else _UNSET,
                         desired_state=str(body.get("desired_state") or "").strip() or None,
+                        **connector_ref_kw,
                     )
                     _write_json_response(self, payload)
                     return
@@ -6919,6 +7438,14 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
 
         def do_DELETE(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/connectors/"):
+                ref = unquote(parsed.path.removeprefix("/api/connectors/")).strip()
+                try:
+                    payload = _api_remove_connector(ref)
+                    _write_json_response(self, payload)
+                except LookupError as exc:
+                    _write_json_response(self, {"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
             if parsed.path.startswith("/api/agents/"):
                 name = unquote(parsed.path.removeprefix("/api/agents/")).strip()
                 try:

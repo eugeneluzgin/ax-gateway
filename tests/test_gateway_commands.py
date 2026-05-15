@@ -3409,6 +3409,8 @@ def test_render_gateway_ui_page_contains_local_dashboard_shell():
     assert "/api/status" in page
     assert "/api/templates" in page
     assert "/api/agents/&lt;name&gt;" in page
+    assert "/api/connectors" in page
+    assert "Outbound Connectors" in page
     assert "refreshMs = 2000" in page
     assert "Gateway Agent Setup" in page
     assert "gateway-agent-setup" in page
@@ -3424,10 +3426,11 @@ def test_gateway_templates_command_json():
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     ids = [item["id"] for item in payload["templates"]]
-    assert ids[:9] == [
+    assert ids[:10] == [
         "hermes",
         "ollama",
         "langgraph",
+        "langgraph_composio",
         "strands",
         "echo_test",
         "service_account",
@@ -3436,14 +3439,15 @@ def test_gateway_templates_command_json():
         "claude_code_channel",
     ]
     assert "inbox" not in ids
-    assert payload["count"] == 9
+    assert payload["count"] == 10
     ollama = next(item for item in payload["templates"] if item["id"] == "ollama")
     assert ollama["runtime_type"] == "exec"
     assert ollama["launchable"] is True
     assert ollama["asset_type_label"] == "On-Demand Agent"
     assert ollama["output_label"] == "Reply"
     assert ollama["setup_skill"] == "gateway-agent-setup"
-    assert ollama["setup_skill_path"].endswith("skills/gateway-agent-setup/SKILL.md")
+    assert Path(ollama["setup_skill_path"]).name == "SKILL.md"
+    assert "gateway-agent-setup" in ollama["setup_skill_path"]
     pass_through = next(item for item in payload["templates"] if item["id"] == "pass_through")
     assert pass_through["runtime_type"] == "inbox"
     assert pass_through["requires_approval"] is True
@@ -3579,7 +3583,8 @@ def test_gateway_ui_handler_serves_status_and_agent_detail(monkeypatch, tmp_path
             template_payload = templates.json()
             assert template_payload["templates"][0]["id"] == "hermes"
             assert template_payload["templates"][2]["id"] == "langgraph"
-            assert template_payload["templates"][3]["id"] == "strands"
+            assert template_payload["templates"][3]["id"] == "langgraph_composio"
+            assert template_payload["templates"][4]["id"] == "strands"
             assert template_payload["templates"][5]["id"] == "service_account"
             channel_template = next(
                 item for item in template_payload["templates"] if item["id"] == "claude_code_channel"
