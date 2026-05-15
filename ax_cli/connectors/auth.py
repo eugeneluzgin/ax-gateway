@@ -1,47 +1,46 @@
-"""Gateway-managed connector auth: env files on disk, never inline in the registry.
-
-``auth_ref`` may be:
-
-- ``gateway:managed`` — secrets live in ``<gateway_dir>/connectors/auth/<connector_id>.env``
-  (mode ``0o600``).
-- Any other non-empty string — path to an operator-owned env file (expanded, resolved).
-
-Callers must never log return values from :func:`load_connector_auth_env`.
-"""
+"""Gateway-managed and file-backed connector auth (secrets never in ``connectors.json``)."""
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from ax_cli.gateway import _chmod_quiet, _redacted_path, gateway_dir
+from ax_cli.gateway import _chmod_quiet, _redacted_path
 
-# Stored in ``connectors.json`` ``auth_ref`` to mean managed on-disk secrets.
-AUTH_REF_MANAGED = "gateway:managed"
+from .constants import AUTH_REF_MANAGED, CONNECTOR_ID_FILENAME_RE, FILE_MODE_DIR, FILE_MODE_SECRET
+from .envfile import parse_dotenv
+from .paths import connectors_auth_env_base
 
-_SAFE_CONNECTOR_ID = re.compile(r"^[a-zA-Z0-9_.-]{1,128}$")
-
-
-def connectors_auth_env_base() -> Path:
-    """Directory for per-connector ``*.env`` files (path only; may not exist yet)."""
-    return gateway_dir() / "connectors" / "auth"
+__all__ = [
+    "AUTH_REF_MANAGED",
+    "connectors_auth_env_base",
+    "delete_managed_auth_file",
+    "ensure_connectors_auth_env_dir",
+    "ensure_managed_auth_file",
+    "load_connector_auth_env",
+    "parse_dotenv",
+    "public_auth_status",
+    "release_managed_auth_if_unused",
+    "resolve_auth_env_path",
+    "uses_managed_auth",
+    "write_managed_auth_from_file",
+]
 
 
 def ensure_connectors_auth_env_dir() -> Path:
     """Ensure the auth directory exists with restrictive permissions."""
     path = connectors_auth_env_base()
     path.mkdir(parents=True, exist_ok=True)
-    _chmod_quiet(path, 0o700)
+    _chmod_quiet(path, FILE_MODE_DIR)
     return path
 
 
 def _managed_env_path(connector_id: str) -> Path:
     cid = str(connector_id or "").strip()
-    if not _SAFE_CONNECTOR_ID.match(cid):
+    if not CONNECTOR_ID_FILENAME_RE.match(cid):
         raise ValueError("connector id is not usable as a managed auth filename")
     return connectors_auth_env_base() / f"{cid}.env"
 
@@ -72,14 +71,14 @@ def resolve_auth_env_path(connector: dict[str, Any]) -> Path | None:
 
 
 def ensure_managed_auth_file(connector_id: str) -> Path:
-    """Create an empty managed ``.env`` if missing (``0o600``)."""
+    """Create an empty managed ``.env`` if missing."""
     ensure_connectors_auth_env_dir()
     path = _managed_env_path(connector_id)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        _chmod_quiet(path.parent, 0o700)
+        _chmod_quiet(path.parent, FILE_MODE_DIR)
         path.write_text("# Connector secrets (KEY=VALUE). Do not commit.\n", encoding="utf-8")
-    _chmod_quiet(path, 0o600)
+    _chmod_quiet(path, FILE_MODE_SECRET)
     return path
 
 
@@ -99,7 +98,7 @@ def delete_managed_auth_file(connector_id: str) -> bool:
 
 
 def write_managed_auth_from_file(connector_id: str, source: Path) -> Path:
-    """Atomically replace managed env content with a copy of ``source`` (bytes)."""
+    """Atomically replace managed env content with a copy of ``source``."""
     src = source.expanduser()
     if not src.is_file():
         raise ValueError(f"source is not a file: {src}")
@@ -120,7 +119,7 @@ def write_managed_auth_from_file(connector_id: str, source: Path) -> Path:
             tmp.flush()
             os.fsync(tmp.fileno())
         assert tmp_path is not None
-        tmp_path.chmod(0o600)
+        tmp_path.chmod(FILE_MODE_SECRET)
         tmp_path.replace(dest)
     finally:
         if tmp_path is not None and tmp_path.exists():
@@ -128,30 +127,8 @@ def write_managed_auth_from_file(connector_id: str, source: Path) -> Path:
                 tmp_path.unlink()
             except OSError:
                 pass
-    _chmod_quiet(dest, 0o600)
+    _chmod_quiet(dest, FILE_MODE_SECRET)
     return dest
-
-
-def parse_dotenv(content: str) -> dict[str, str]:
-    """Parse minimal KEY=VALUE lines (no command substitution)."""
-    result: dict[str, str] = {}
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.lower().startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        k = key.strip()
-        if not k or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
-            continue
-        v = value.strip()
-        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
-            v = v[1:-1]
-        result[k] = v
-    return result
 
 
 def load_connector_auth_env(connector: dict[str, Any]) -> dict[str, str]:

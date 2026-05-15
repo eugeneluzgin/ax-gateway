@@ -1,178 +1,36 @@
-"""Filesystem-backed connector registry for the local Gateway.
-
-Each row describes an outbound integration (e.g. Composio MCP, custom HTTP MCP).
-Secrets must not live inline: use ``auth_ref`` for a path or vault key only.
-"""
+"""Connector registry: load, save, and CRUD over ``connectors.json``."""
 
 from __future__ import annotations
 
-import copy
-import json
-import os
-import re
-import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ax_cli.gateway import gateway_dir
+from .constants import CONNECTORS_SCHEMA_VERSION, UNSET
+from .paths import connectors_registry_path  # re-exported for backward-compatible imports
+from .storage import atomic_write_json, read_json_object, utc_now_iso
+from .validation import (
+    coerce_connectors_registry,
+    default_connectors_registry,
+    normalize_connector_record,
+    validate_connector_record,
+)
 
-CONNECTORS_SCHEMA_VERSION = 1
-
-# Slug-safe labels for operator UX and future dashboard/API use.
-_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$", re.IGNORECASE)
-
-_MAX_AUTH_REF_LEN = 2048
-_MAX_ID_LEN = 128
-
-
-class _UnsetType:
-    __slots__ = ()
-
-
-_UNSET: Any = _UnsetType()
-
-
-def connectors_registry_path() -> Path:
-    return gateway_dir() / "connectors.json"
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def default_connectors_registry() -> dict[str, Any]:
-    return {"version": CONNECTORS_SCHEMA_VERSION, "connectors": []}
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any], *, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
-            json.dump(payload, tmp, indent=2, sort_keys=True)
-            tmp.write("\n")
-            tmp.flush()
-            os.fsync(tmp.fileno())
-        assert tmp_path is not None
-        tmp_path.chmod(mode)
-        tmp_path.replace(path)
-    finally:
-        if tmp_path is not None and tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-    try:
-        path.chmod(mode)
-    except OSError:
-        pass
-
-
-def _read_raw(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return copy.deepcopy(default_connectors_registry())
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return copy.deepcopy(default_connectors_registry())
-    if not isinstance(raw, dict):
-        return copy.deepcopy(default_connectors_registry())
-    return raw
-
-
-def validate_connector_record(rec: dict[str, Any]) -> None:
-    """Raise ``ValueError`` with a human-readable message if ``rec`` is invalid."""
-    errs: list[str] = []
-    if not isinstance(rec, dict):
-        raise ValueError("connector row must be an object")
-    cid = str(rec.get("id") or "").strip()
-    name = str(rec.get("name") or "").strip()
-    provider = str(rec.get("provider") or "").strip()
-    if not cid:
-        errs.append("id is required")
-    elif len(cid) > _MAX_ID_LEN:
-        errs.append(f"id must be at most {_MAX_ID_LEN} characters")
-    if not name:
-        errs.append("name is required")
-    elif not _LABEL_RE.match(name):
-        errs.append("name must be 1–64 chars: start with alphanumeric, then [a-zA-Z0-9_.-]")
-    if not provider:
-        errs.append("provider is required")
-    elif not _LABEL_RE.match(provider):
-        errs.append("provider must be 1–64 chars: start with alphanumeric, then [a-zA-Z0-9_.-]")
-    enabled = rec.get("enabled", True)
-    if not isinstance(enabled, bool):
-        errs.append("enabled must be a boolean")
-    auth_ref = rec.get("auth_ref")
-    if auth_ref is not None and auth_ref != "":
-        if not isinstance(auth_ref, str):
-            errs.append("auth_ref must be a string or null")
-        elif len(auth_ref) > _MAX_AUTH_REF_LEN:
-            errs.append(
-                f"auth_ref must be at most {_MAX_AUTH_REF_LEN} characters (use a path or opaque ref, not inline secrets)"
-            )
-    cfg = rec.get("config", {})
-    if cfg is None:
-        cfg = {}
-    if not isinstance(cfg, dict):
-        errs.append("config must be an object")
-    meta = rec.get("metadata", {})
-    if meta is None:
-        meta = {}
-    if not isinstance(meta, dict):
-        errs.append("metadata must be an object")
-    for key in ("created_at", "updated_at"):
-        val = rec.get(key)
-        if val is not None and val != "" and not isinstance(val, str):
-            errs.append(f"{key} must be a string or omitted")
-    if errs:
-        raise ValueError("; ".join(errs))
-
-
-def normalize_connector_record(rec: dict[str, Any]) -> dict[str, Any]:
-    """Return a new dict with defaults applied; does not validate beyond coercion."""
-    if not isinstance(rec, dict):
-        raise ValueError("connector row must be an object")
-    cid = str(rec.get("id") or "").strip() or str(uuid.uuid4())
-    name = str(rec.get("name") or "").strip()
-    provider = str(rec.get("provider") or "").strip()
-    enabled = rec.get("enabled", True)
-    if not isinstance(enabled, bool):
-        enabled = bool(enabled)
-    auth_ref_raw = rec.get("auth_ref")
-    if auth_ref_raw is None or auth_ref_raw == "":
-        auth_ref: str | None = None
-    else:
-        auth_ref = str(auth_ref_raw).strip() or None
-    cfg = rec.get("config") or {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    meta = rec.get("metadata") or {}
-    if not isinstance(meta, dict):
-        meta = {}
-    created = rec.get("created_at")
-    updated = rec.get("updated_at")
-    return {
-        "id": cid,
-        "name": name,
-        "provider": provider,
-        "enabled": enabled,
-        "auth_ref": auth_ref,
-        "config": dict(cfg),
-        "metadata": dict(meta),
-        "created_at": str(created) if created else _now_iso(),
-        "updated_at": str(updated) if updated else _now_iso(),
-    }
+# Re-export for callers that imported schema version from this module.
+__all__ = [
+    "CONNECTORS_SCHEMA_VERSION",
+    "add_connector",
+    "connectors_registry_path",
+    "default_connectors_registry",
+    "find_connector",
+    "list_connectors",
+    "load_connectors_registry",
+    "normalize_connector_record",
+    "remove_connector",
+    "save_connectors_registry",
+    "update_connector",
+    "validate_connector_record",
+]
 
 
 def _connector_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -180,30 +38,6 @@ def _connector_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         return []
     return [x for x in items if isinstance(x, dict)]
-
-
-def _coerce_registry(raw: dict[str, Any]) -> dict[str, Any]:
-    version = raw.get("version")
-    try:
-        v = int(version) if version is not None else CONNECTORS_SCHEMA_VERSION
-    except (TypeError, ValueError):
-        v = CONNECTORS_SCHEMA_VERSION
-    rows_in = raw.get("connectors")
-    if rows_in is None:
-        rows_in = []
-    if not isinstance(rows_in, list):
-        rows_in = []
-    connectors: list[dict[str, Any]] = []
-    for row in rows_in:
-        if not isinstance(row, dict):
-            continue
-        try:
-            normalized = normalize_connector_record(row)
-            validate_connector_record(normalized)
-        except ValueError:
-            continue
-        connectors.append(normalized)
-    return {"version": v, "connectors": connectors}
 
 
 def list_connectors(registry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -241,8 +75,8 @@ def assert_unique_connector_name(registry: dict[str, Any], name: str, *, exclude
 
 def load_connectors_registry() -> dict[str, Any]:
     path = connectors_registry_path()
-    raw = _read_raw(path)
-    coerced = _coerce_registry(raw)
+    raw = read_json_object(path, default=default_connectors_registry())
+    coerced = coerce_connectors_registry(raw)
     coerced["version"] = CONNECTORS_SCHEMA_VERSION
     return coerced
 
@@ -262,7 +96,7 @@ def save_connectors_registry(registry: dict[str, Any]) -> Path:
     if len(names) != len(set(names)):
         raise ValueError("duplicate connector name (case-insensitive)")
     payload = {"version": CONNECTORS_SCHEMA_VERSION, "connectors": rows}
-    _atomic_write_json(path, payload)
+    atomic_write_json(path, payload)
     return path
 
 
@@ -277,7 +111,7 @@ def add_connector(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     assert_unique_connector_name(registry, name)
-    now = _now_iso()
+    now = utc_now_iso()
     rec = normalize_connector_record(
         {
             "id": str(uuid.uuid4()),
@@ -305,7 +139,7 @@ def update_connector(
     name: str | None = None,
     provider: str | None = None,
     enabled: bool | None = None,
-    auth_ref: Any = _UNSET,
+    auth_ref: Any = UNSET,
     clear_auth_ref: bool = False,
     config: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -316,7 +150,7 @@ def update_connector(
         return None
     tid = str(target.get("id") or "")
     changed = False
-    if clear_auth_ref and auth_ref is not _UNSET:
+    if clear_auth_ref and auth_ref is not UNSET:
         raise ValueError("cannot pass both clear_auth_ref and auth_ref")
     if name is not None:
         new_name = str(name).strip()
@@ -338,7 +172,7 @@ def update_connector(
         if target.get("auth_ref") is not None:
             changed = True
         target["auth_ref"] = None
-    elif auth_ref is not _UNSET:
+    elif auth_ref is not UNSET:
         if auth_ref in (None, ""):
             if target.get("auth_ref") is not None:
                 changed = True
@@ -361,7 +195,7 @@ def update_connector(
         target["metadata"] = dict(metadata)
         changed = True
     if changed:
-        target["updated_at"] = _now_iso()
+        target["updated_at"] = utc_now_iso()
     validate_connector_record(target)
     return target
 

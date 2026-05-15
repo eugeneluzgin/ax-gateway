@@ -1,4 +1,19 @@
-"""Gateway outbound connector registry (tool providers, MCP backends, etc.)."""
+"""Gateway outbound connectors: registry, auth storage, and future provider adapters.
+
+Package layout (phases 1–3):
+
+- :mod:`constants` — schema version, ``AUTH_REF_MANAGED``, validation limits
+- :mod:`paths` — ``connectors.json`` and managed auth directory paths
+- :mod:`storage` — atomic JSON read/write under the Gateway dir
+- :mod:`validation` — row validate/normalize and registry coercion
+- :mod:`registry` — load/save and CRUD
+- :mod:`auth` — managed ``.env`` files and external auth paths
+- :mod:`envfile` — dotenv parsing for auth files
+- :mod:`types` — ``TypedDict`` shapes for registry rows
+
+Import from this package (``from ax_cli.connectors import …``) rather than
+submodules unless you are extending the connector layer.
+"""
 
 from .auth import (
     AUTH_REF_MANAGED,
@@ -14,10 +29,10 @@ from .auth import (
     uses_managed_auth,
     write_managed_auth_from_file,
 )
+from .constants import CONNECTORS_SCHEMA_VERSION
+from .paths import connectors_registry_path
 from .registry import (
-    CONNECTORS_SCHEMA_VERSION,
     add_connector,
-    connectors_registry_path,
     default_connectors_registry,
     find_connector,
     list_connectors,
@@ -28,10 +43,13 @@ from .registry import (
     update_connector,
     validate_connector_record,
 )
+from .types import ConnectorRecord, ConnectorRegistry
 
 __all__ = [
     "AUTH_REF_MANAGED",
     "CONNECTORS_SCHEMA_VERSION",
+    "ConnectorRecord",
+    "ConnectorRegistry",
     "add_connector",
     "connectors_auth_env_base",
     "connectors_registry_path",

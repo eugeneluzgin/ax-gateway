@@ -43,24 +43,22 @@ from ..commands.bootstrap import (
     _polish_metadata,
 )
 from ..config import resolve_space_id, resolve_user_base_url, resolve_user_token
-from ..connectors.auth import (
+from ..connectors import (
     AUTH_REF_MANAGED,
-    delete_managed_auth_file,
-    ensure_managed_auth_file,
-    public_auth_status,
-    release_managed_auth_if_unused,
-    uses_managed_auth,
-    write_managed_auth_from_file,
-)
-from ..connectors.registry import (
     add_connector,
     connectors_registry_path,
+    delete_managed_auth_file,
+    ensure_managed_auth_file,
     find_connector,
     list_connectors,
     load_connectors_registry,
+    public_auth_status,
+    release_managed_auth_if_unused,
     remove_connector,
     save_connectors_registry,
     update_connector,
+    uses_managed_auth,
+    write_managed_auth_from_file,
 )
 from ..gateway import (
     AX_PLUGIN_NAME,
