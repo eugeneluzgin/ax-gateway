@@ -103,7 +103,7 @@ def test_resolve_external_path(tmp_path, monkeypatch):
 def test_remove_connector_deletes_managed_file(tmp_path, monkeypatch):
     monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
     reg = load_connectors_registry()
-    rec = add_connector(reg, name="m", provider="p", auth_ref=AUTH_REF_MANAGED)
+    rec = add_connector(reg, name="m", provider="composio", auth_ref=AUTH_REF_MANAGED)
     save_connectors_registry(reg)
     cid = str(rec["id"])
     ensure_managed_auth_file(cid)
@@ -119,7 +119,7 @@ def test_remove_connector_deletes_managed_file(tmp_path, monkeypatch):
 def test_update_clear_auth_releases_managed(tmp_path, monkeypatch):
     monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
     reg = load_connectors_registry()
-    rec = add_connector(reg, name="u", provider="p", auth_ref=AUTH_REF_MANAGED)
+    rec = add_connector(reg, name="u", provider="composio", auth_ref=AUTH_REF_MANAGED)
     save_connectors_registry(reg)
     cid = str(rec["id"])
     ensure_managed_auth_file(cid)

@@ -16,12 +16,13 @@ from ax_cli.connectors.filtering import (
 from ax_cli.connectors.registry import find_connector, load_connectors_registry
 
 from .base import ConnectorProviderError, ToolCallResult, ToolSearchResult
-from .composio_adapter import PROVIDER_ID
+from .catalog import PROVIDER_COMPOSIO, PROVIDER_HTTP_MCP
 from .composio_catalog import (
     list_composio_tools,
     search_composio_tools_catalog,
     search_composio_tools_intent,
 )
+from .http_mcp_catalog import list_http_mcp_tools, search_http_mcp_tools_catalog
 from .registry import get_provider_adapter
 
 SearchMode = Literal["catalog", "intent", "auto"]
@@ -52,6 +53,10 @@ def _require_connector_row(
     return row
 
 
+def _provider_id(row: dict[str, Any]) -> str:
+    return str(row.get("provider") or "").strip().lower()
+
+
 def list_connector_tools(
     connector_ref: str,
     *,
@@ -62,22 +67,30 @@ def list_connector_tools(
     limit: int | None = None,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List tools for a connector (Composio catalog API + Gateway policy)."""
+    """List tools for a connector (provider catalog + Gateway policy)."""
     row = _require_connector_row(registry, connector_ref)
-    provider = str(row.get("provider") or "").strip().lower()
-    if provider != PROVIDER_ID:
-        raise ConnectorProviderError(f"tool listing is not implemented for provider {provider!r}")
+    provider = _provider_id(row)
     policy = resolve_tool_filter_policy(row)
     adapter = adapter_for_connector(row)
-    page = list_composio_tools(
-        adapter,
-        policy,
-        query=query,
-        toolkit_slug=toolkit_slug,
-        tool_slugs=tool_slugs,
-        limit=limit,
-        cursor=cursor,
-    )
+    if provider == PROVIDER_COMPOSIO:
+        page = list_composio_tools(
+            adapter,
+            policy,
+            query=query,
+            toolkit_slug=toolkit_slug,
+            tool_slugs=tool_slugs,
+            limit=limit,
+            cursor=cursor,
+        )
+    elif provider == PROVIDER_HTTP_MCP:
+        if toolkit_slug or tool_slugs or cursor:
+            pass  # ignored for MCP tools/list
+        page = list_http_mcp_tools(adapter, policy, query=query, limit=limit)
+    else:
+        raise ConnectorProviderError(
+            f"tool listing is not implemented for provider {provider!r} "
+            f"(supported: {PROVIDER_COMPOSIO}, {PROVIDER_HTTP_MCP})"
+        )
     page["connector_name"] = row.get("name")
     page["provider"] = provider
     return page
@@ -93,13 +106,21 @@ def search_connector_tools(
     session_id: str | None = None,
     limit: int | None = None,
 ) -> ToolSearchResult:
-    """Search tools by natural-language use case (Composio intent or catalog query)."""
+    """Search tools by natural-language use case (intent or catalog query)."""
     row = _require_connector_row(registry, connector_ref)
-    provider = str(row.get("provider") or "").strip().lower()
-    if provider != PROVIDER_ID:
-        raise ConnectorProviderError(f"tool search is not implemented for provider {provider!r}")
+    provider = _provider_id(row)
     policy = resolve_tool_filter_policy(row)
     adapter = adapter_for_connector(row)
+
+    if provider == PROVIDER_HTTP_MCP:
+        return search_http_mcp_tools_catalog(adapter, policy, use_case, limit=limit)
+
+    if provider != PROVIDER_COMPOSIO:
+        raise ConnectorProviderError(
+            f"tool search is not implemented for provider {provider!r} "
+            f"(supported: {PROVIDER_COMPOSIO}, {PROVIDER_HTTP_MCP})"
+        )
+
     cfg = row.get("config") if isinstance(row.get("config"), dict) else {}
     configured_mode = str(cfg.get("search_mode") or "auto").strip().lower()
     effective_mode = mode if mode != "auto" else configured_mode  # type: ignore[assignment]
@@ -117,7 +138,6 @@ def search_connector_tools(
             session_id=session_id,
         )
     else:
-        # Prefer Composio intent search; fall back to catalog query on failure.
         result = search_composio_tools_intent(
             adapter,
             policy,

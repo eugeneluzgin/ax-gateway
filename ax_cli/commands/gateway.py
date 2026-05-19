@@ -66,6 +66,7 @@ from ..connectors import (
     uses_managed_auth,
     write_managed_auth_from_file,
 )
+from ..connectors.providers.catalog import providers_payload
 from ..gateway import (
     AX_PLUGIN_NAME,
     GatewayDaemon,
@@ -647,14 +648,19 @@ def connectors_tools_search(
 
 @connectors_app.command("providers")
 def connectors_providers(as_json: bool = JSON_OPTION):
-    """List connector provider ids supported for tool execution."""
-    rows = [{"provider": pid} for pid in sorted(SUPPORTED_PROVIDERS)]
+    """List connector provider types and capabilities."""
+    payload = providers_payload()
     if as_json:
-        print_json({"providers": rows})
+        print_json(payload)
         return
     err_console.print("[bold]Supported connector providers[/bold]")
-    for pid in sorted(SUPPORTED_PROVIDERS):
-        err_console.print(f"  - {pid}")
+    for row in payload.get("providers") or []:
+        if not isinstance(row, dict):
+            continue
+        pid = row.get("id") or row.get("provider")
+        label = row.get("label") or pid
+        caps = ", ".join(row.get("capabilities") or [])
+        err_console.print(f"  - {pid} ({label}): {caps}")
 
 
 @connectors_auth_app.command("bind-managed")
@@ -3343,6 +3349,7 @@ def _connectors_list_payload(*, registry: dict[str, Any] | None = None) -> dict[
         "registry_path": str(connectors_registry_path()),
         "auth_env_dir": str(connectors_auth_env_base()),
         "providers": sorted(SUPPORTED_PROVIDERS),
+        "provider_catalog": providers_payload()["providers"],
         "connectors": rows,
         "count": len(rows),
         "summary": {
@@ -3545,6 +3552,7 @@ def _status_payload(*, activity_limit: int = 10, include_hidden: bool = False) -
     connector_payload = _connectors_list_payload(registry=registry)
     payload["connectors"] = connector_payload["connectors"]
     payload["connectors_summary"] = connector_payload["summary"]
+    payload["connector_providers"] = connector_payload.get("provider_catalog") or []
     payload["summary"]["connectors"] = connector_payload["summary"]["total"]
     payload["summary"]["connectors_auth_ready"] = connector_payload["summary"]["auth_ready"]
     alerts = _gateway_alerts(payload)
@@ -5712,7 +5720,11 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
               </div>
               <div class="control-group">
                 <label for="connector-provider">Provider</label>
-                <select id="connector-provider" name="provider"><option value="composio">composio</option></select>
+                <select id="connector-provider" name="provider"></select>
+              </div>
+              <div class="control-group" id="connector-base-url-group">
+                <label for="connector-base-url">base_url (http_mcp)</label>
+                <input id="connector-base-url" name="base_url" placeholder="https://mcp.example.com/mcp" />
               </div>
               <div class="control-group">
                 <label for="connector-user-id">user_id</label>
@@ -6178,7 +6190,21 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
     }
 
 
+    function populateConnectorProviderSelect(catalog) {
+      const select = document.getElementById("connector-provider");
+      if (!select) return;
+      const rows = Array.isArray(catalog) ? catalog : [];
+      const current = select.value;
+      select.innerHTML = rows.map((row) => {
+        const id = row.id || row.provider || "";
+        const label = row.label || id;
+        return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+      }).join("") || `<option value="composio">composio</option>`;
+      if (current) select.value = current;
+    }
+
     function renderConnectors(payload) {
+      populateConnectorProviderSelect(payload.connector_providers || payload.provider_catalog || []);
       const rows = payload.connectors || [];
       const summary = payload.connectors_summary || {};
       document.getElementById("connectors-summary").textContent = rows.length
@@ -6619,15 +6645,18 @@ def _render_gateway_ui_page(*, refresh_ms: int) -> str:
       const allowedRaw = String(data.get("allowed_tools") || "").trim();
       const allowed = allowedRaw ? allowedRaw.split(",").map((part) => part.trim()).filter(Boolean) : [];
       const config = {};
+      const provider = String(data.get("provider") || "composio").trim();
       const userId = String(data.get("user_id") || "").trim();
+      const baseUrl = String(data.get("base_url") || "").trim();
       if (userId) config.user_id = userId;
+      if (baseUrl) config.base_url = baseUrl;
       if (allowed.length) config.allowed_tools = allowed;
       try {
         const created = await apiRequest("/api/connectors", {
           method: "POST",
           body: JSON.stringify({
             name: String(data.get("name") || "").trim(),
-            provider: String(data.get("provider") || "composio").trim(),
+            provider,
             managed_auth: data.get("managed_auth") === "on",
             config,
           }),
@@ -6922,6 +6951,9 @@ def _build_gateway_ui_handler(*, activity_limit: int, refresh_ms: int):
                 has_data = bool(payload.get("spaces") or payload.get("active_space_id"))
                 status = HTTPStatus.OK if has_data else HTTPStatus.SERVICE_UNAVAILABLE
                 _write_json_response(self, payload, status=status)
+                return
+            if parsed.path == "/api/connectors/providers":
+                _write_json_response(self, providers_payload())
                 return
             if parsed.path == "/api/connectors":
                 _write_json_response(self, _connectors_list_payload())

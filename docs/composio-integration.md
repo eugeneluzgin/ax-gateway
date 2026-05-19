@@ -197,7 +197,30 @@ Gateway does not copy or chmod external files; the operator owns permissions and
 | `ax gateway connectors tools list` | Composio catalog + policy |
 | `ax gateway connectors tools search` | Intent/catalog search + policy |
 | `ax gateway connectors call` | Execute tool by slug |
-| `ax gateway connectors providers` | Supported provider ids (`composio`) |
+| `ax gateway connectors providers` | Provider catalog (capabilities per type) |
+
+## Multi-provider support
+
+Gateway ships two connector provider types:
+
+| Provider | Execute | List tools | Intent search | Auth env keys |
+|----------|---------|------------|---------------|---------------|
+| `composio` | Composio HTTP tool API | Composio catalog API | `COMPOSIO_SEARCH_TOOLS` | `COMPOSIO_API_KEY`, `COMPOSIO_USER_ID`, … |
+| `http_mcp` | MCP `tools/call` | MCP `tools/list` | Catalog text match only | `MCP_BEARER_TOKEN`, `MCP_AUTHORIZATION`, `MCP_API_KEY` |
+
+**`http_mcp`** is for any MCP server exposed over HTTP JSON-RPC (self-hosted, Composio hosted MCP URL, etc.). Registry config must include `config.base_url`. Optional: `protocol_version`, `skip_initialize`, `api_key_header`.
+
+Example registry row (CLI or dashboard):
+
+```bash
+ax gateway connectors add my_mcp --provider http_mcp --managed-auth \
+  --config-json '{"base_url":"https://mcp.example.com/rpc","skip_initialize":true}'
+ax gateway connectors auth write my_mcp --from-file ./mcp.env   # MCP_BEARER_TOKEN=...
+ax gateway connectors tools list my_mcp
+ax gateway connectors call my_mcp echo --args-json '{"message":"hi"}'
+```
+
+Operator UI: provider dropdown is populated from `GET /api/connectors/providers`.
 
 ## Related docs
 

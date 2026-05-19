@@ -42,18 +42,18 @@ def test_add_list_save_load(tmp_path, monkeypatch):
 def test_duplicate_name_in_memory_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
     reg = cr.load_connectors_registry()
-    cr.add_connector(reg, name="alpha", provider="p1")
+    cr.add_connector(reg, name="alpha", provider="composio")
     with pytest.raises(ValueError, match="already in use"):
-        cr.add_connector(reg, name="ALPHA", provider="p2")
+        cr.add_connector(reg, name="ALPHA", provider="composio")
 
 
 def test_save_rejects_duplicate_ids(tmp_path, monkeypatch):
     monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
     reg = cr.load_connectors_registry()
     reg.setdefault("connectors", []).append(
-        cr.normalize_connector_record({"id": "same", "name": "n1", "provider": "a"})
+        cr.normalize_connector_record({"id": "same", "name": "n1", "provider": "composio"})
     )
-    reg["connectors"].append(cr.normalize_connector_record({"id": "same", "name": "n2", "provider": "b"}))
+    reg["connectors"].append(cr.normalize_connector_record({"id": "same", "name": "n2", "provider": "composio"}))
     with pytest.raises(ValueError, match="duplicate connector id"):
         cr.save_connectors_registry(reg)
 
@@ -61,7 +61,7 @@ def test_save_rejects_duplicate_ids(tmp_path, monkeypatch):
 def test_find_and_remove(tmp_path, monkeypatch):
     monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
     reg = cr.load_connectors_registry()
-    rec = cr.add_connector(reg, name="x", provider="y")
+    rec = cr.add_connector(reg, name="x", provider="composio")
     cid = str(rec["id"])
     assert cr.find_connector(reg, "x") is rec
     assert cr.find_connector(reg, cid) is rec
@@ -105,6 +105,6 @@ def test_validate_rejects_bad_name():
 def test_clear_auth_ref(tmp_path, monkeypatch):
     monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
     reg = cr.load_connectors_registry()
-    cr.add_connector(reg, name="c", provider="p", auth_ref="/tmp/x.env")
+    cr.add_connector(reg, name="c", provider="composio", auth_ref="/tmp/x.env")
     cr.update_connector(reg, "c", clear_auth_ref=True)
     assert cr.find_connector(reg, "c")["auth_ref"] is None

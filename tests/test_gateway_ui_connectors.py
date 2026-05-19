@@ -21,6 +21,22 @@ def test_render_gateway_ui_page_includes_connectors_panel():
     assert "connector-rows" in page
     assert "add-connector-form" in page
     assert "renderConnectors" in page
+    assert "populateConnectorProviderSelect" in page
+    assert "connector-base-url" in page
+
+
+def test_connectors_providers_api_payload():
+    payload = gateway_cmd.providers_payload()
+    ids = {row["id"] for row in payload["providers"]}
+    assert "composio" in ids
+    assert "http_mcp" in ids
+
+
+def test_connectors_list_payload_includes_provider_catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv("AX_GATEWAY_DIR", str(tmp_path))
+    payload = gateway_cmd._connectors_list_payload()
+    catalog = payload.get("provider_catalog") or []
+    assert any(row.get("id") == "http_mcp" for row in catalog)
 
 
 def test_connectors_list_payload_redacts_secrets(tmp_path, monkeypatch):
@@ -84,6 +100,10 @@ def test_gateway_ui_connectors_api_crud(monkeypatch, tmp_path):
             body = status.json()
             assert body["summary"]["connectors"] == 1
             assert len(body["connectors"]) == 1
+            providers = client.get("/api/connectors/providers")
+            assert providers.status_code == 200
+            provider_ids = {row["id"] for row in providers.json().get("providers", [])}
+            assert "http_mcp" in provider_ids
 
             updated = client.put(
                 "/api/connectors/dash_composio",
@@ -113,3 +133,4 @@ def test_status_payload_includes_connectors_summary(monkeypatch, tmp_path):
     payload = gateway_cmd._status_payload()
     assert payload["summary"]["connectors"] == 1
     assert payload["connectors_summary"]["total"] == 1
+    assert any(row.get("id") == "composio" for row in payload.get("connector_providers") or [])

@@ -11,6 +11,7 @@ from .constants import (
     MAX_AUTH_REF_LEN,
     MAX_CONNECTOR_ID_LEN,
 )
+from .providers.catalog import PROVIDER_HTTP_MCP, is_supported_provider
 from .storage import utc_now_iso
 
 
@@ -21,7 +22,7 @@ def validate_connector_record(rec: dict[str, Any]) -> None:
         raise ValueError("connector row must be an object")
     cid = str(rec.get("id") or "").strip()
     name = str(rec.get("name") or "").strip()
-    provider = str(rec.get("provider") or "").strip()
+    provider = str(rec.get("provider") or "").strip().lower()
     if not cid:
         errs.append("id is required")
     elif len(cid) > MAX_CONNECTOR_ID_LEN:
@@ -34,6 +35,11 @@ def validate_connector_record(rec: dict[str, Any]) -> None:
         errs.append("provider is required")
     elif not CONNECTOR_LABEL_RE.match(provider):
         errs.append("provider must be 1–64 chars: start with alphanumeric, then [a-zA-Z0-9_.-]")
+    elif not is_supported_provider(provider):
+        from .providers.catalog import SUPPORTED_PROVIDERS
+
+        supported = ", ".join(sorted(SUPPORTED_PROVIDERS))
+        errs.append(f"unsupported provider {provider!r} (supported: {supported})")
     enabled = rec.get("enabled", True)
     if not isinstance(enabled, bool):
         errs.append("enabled must be a boolean")
@@ -51,6 +57,10 @@ def validate_connector_record(rec: dict[str, Any]) -> None:
         cfg = {}
     if not isinstance(cfg, dict):
         errs.append("config must be an object")
+    elif provider == PROVIDER_HTTP_MCP:
+        base_url = str(cfg.get("base_url") or "").strip()
+        if not base_url:
+            errs.append("http_mcp requires config.base_url (MCP HTTP endpoint URL)")
     meta = rec.get("metadata", {})
     if meta is None:
         meta = {}

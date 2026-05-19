@@ -24,6 +24,7 @@ def test_public_api_matches_submodules():
     assert connectors.uses_managed_auth is auth_mod.uses_managed_auth
     assert connectors.execute_connector_tool is providers_mod.execute_connector_tool
     assert "composio" in connectors.SUPPORTED_PROVIDERS
+    assert "http_mcp" in connectors.SUPPORTED_PROVIDERS
 
 
 def test_package_exports_documented_symbols():

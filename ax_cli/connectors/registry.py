@@ -116,7 +116,7 @@ def add_connector(
         {
             "id": str(uuid.uuid4()),
             "name": name.strip(),
-            "provider": provider.strip(),
+            "provider": provider.strip().lower(),
             "enabled": enabled,
             "auth_ref": auth_ref,
             "config": dict(config or {}),

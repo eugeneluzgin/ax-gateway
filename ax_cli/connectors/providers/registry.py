@@ -5,14 +5,15 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .base import ConnectorProviderError, ProviderAdapter
+from .catalog import SUPPORTED_PROVIDERS
 from .composio_adapter import build_composio_adapter
+from .http_mcp_adapter import build_http_mcp_adapter
 
 ProviderFactory = Callable[[dict[str, Any]], ProviderAdapter]
 
-SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"composio"})
-
 _FACTORIES: dict[str, ProviderFactory] = {
     "composio": build_composio_adapter,
+    "http_mcp": build_http_mcp_adapter,
 }
 
 
